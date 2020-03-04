@@ -365,8 +365,15 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			ArrayList<Map<String, String>> tuple_format = (ArrayList<Map<String, String>>) schema.get("tuple-format");
 			TypeInformation<?>[] typeInformations = new TypeInformation[tuple_format.size()];
 			int pos = -1;
+			String rowtime_column = null;
+			if (schema.containsKey("rowtime-column")) {
+				rowtime_column = ((Map<String, String>)schema.get("rowtime-column")).get("column");
+			}
 			for (Map<String, String> attribute : tuple_format) {
 				pos += 1;
+				if (attribute.get("name") != null && attribute.get("name").equals(rowtime_column)) {
+					attribute.put("name", "eventTime.rowtime");
+				}
 				switch (attribute.get("type")) {
 					case "string":
 						typeInformations[pos] = Types.STRING;
