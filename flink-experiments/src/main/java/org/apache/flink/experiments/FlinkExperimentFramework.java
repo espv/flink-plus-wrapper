@@ -581,8 +581,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	private Map<String, Object> GetMapFromYaml(Map<String, Object> ds) {
 		FileInputStream fis = null;
 		Yaml yaml = new Yaml();
+		String dataset_path = System.getenv().get("EXPOSE_PATH") + "/" + ds.get("file");
 		try {
-			fis = new FileInputStream(((String) ds.get("file")).replaceFirst("^~", System.getProperty("user.home")));
+			fis = new FileInputStream(dataset_path);
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
 		}
