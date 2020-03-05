@@ -103,8 +103,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String SetNodeIdToAddress(Map<Integer, Map<String, Object> > newNodeIdToIpAndPort) {
-		//System.out.println("SetNodeIdToAddress: " + newNodeIdToIpAndPort);
+	public String SetNidToAddress(Map<Integer, Map<String, Object> > newNodeIdToIpAndPort) {
+		//System.out.println("SetNidToAddress: " + newNodeIdToIpAndPort);
 		nodeIdToIpAndPort = newNodeIdToIpAndPort;
 		Properties properties = new Properties();
 		for (Object key : props.keySet()) {
@@ -122,7 +122,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String AddSubscriberOfStream(int streamId, int nodeId) {
+	public String AddNextHop(int streamId, int nodeId) {
 		if (!streamIdToNodeIds.containsKey(streamId)) {
 			streamIdToNodeIds.put(streamId, new ArrayList<>());
 		}
@@ -287,7 +287,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String ProcessDataset(Map<String, Object> ds) {
+	public String SendDsAsStream(Map<String, Object> ds) {
 		//System.out.println("Processing dataset");
 		int stream_id = (int) ds.get("stream-id");
 		List<Map<String, Object>> tuples = datasetIdToTuples.get(stream_id);
@@ -355,7 +355,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String AddStreamSchemas(List<Map<String, Object>> schemas) {
+	public String AddSchemas(List<Map<String, Object>> schemas) {
 		for (Map<String, Object> schema : schemas) {
 			int stream_id = (int) schema.get("stream-id");
 			final String stream_name = (String) schema.get("name");
@@ -456,7 +456,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String AddQueries(Map<String, Object> query) {
+	public String DeployQueries(Map<String, Object> query) {
 		int outputStreamId = (int) query.get("output-stream-id");
 		printDataStream.put(outputStreamId, (boolean) query.getOrDefault("print", false));
 		String type_query = (String) query.get("type");
@@ -478,7 +478,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String RunEnvironment() {
+	public String StartRuntimeEnv() {
 		if (interrupted) {
 			System.out.println("Still waiting for the runtime environment to interrupt!");
 			return "Error, runtime environment has not exited from its previous execution";
@@ -486,9 +486,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 
 		if (threadRunningEnvironment != null && threadRunningEnvironment.isAlive()) {
 			//throw new RuntimeException("The execution environment is already running. " +
-			//	                   	   "Stop it with stopEnvironment before running it again.");
+			//	                   	   "Stop it with stopRuntimeEnv before running it again.");
 			//System.out.println("The execution environment is already running. " +
-			//	"Stop it with stopEnvironment before running it again.");
+			//	"Stop it with stopRuntimeEnv before running it again.");
 			return "Environment already running";
 		}
 		Set<Integer> streamIds = new HashSet<>();
@@ -522,7 +522,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	boolean interrupted = false;
 	static int cnt3 = 0;
 	@Override
-	public String StopEnvironment() {
+	public String StopRuntimeEnv() {
 		System.out.println("Before tf.traceEvent(101);");
 		tf.traceEvent(101);
 		System.out.println("Before threadRunningEnvironment.interrupt();");
@@ -624,13 +624,13 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String CleanupExperiment() {
+	public String EndExperiment() {
 		tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());
 		return "Success";
 	}
 
 	@Override
-	public String AddTracepointIds(List<Object> tracepointIds) {
+	public String AddTpIds(List<Object> tracepointIds) {
 		for (int tracepointId : (List<Integer>) (List<?>) tracepointIds) {
 			this.tf.addTracepoint(tracepointId);
 		}
@@ -638,7 +638,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String NotifyAfterNoReceivedTuple(int milliseconds) {
+	public String RetEndOfStream(int milliseconds) {
 		long time_diff;
 		do {
 			try {
@@ -648,7 +648,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			}
 			long cur_time = System.currentTimeMillis();
 			time_diff = cur_time - Kafka09Fetcher.timeLastRecvdTuple;
-			System.out.println("NotifyAfterNoReceivedTuple, time_diff: " + time_diff + ", cur-time: " + cur_time + ", timeLastRecvdTuple: " + Kafka09Fetcher.timeLastRecvdTuple);
+			System.out.println("RetEndOfStream, time_diff: " + time_diff + ", cur-time: " + cur_time + ", timeLastRecvdTuple: " + Kafka09Fetcher.timeLastRecvdTuple);
 		} while (time_diff < milliseconds || Kafka09Fetcher.timeLastRecvdTuple == 0);
 		return Long.toString(time_diff);
 	}
