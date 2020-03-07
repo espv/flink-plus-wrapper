@@ -544,6 +544,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			Thread.sleep(2000);
 		} catch (InterruptedException e) {
 			e.printStackTrace();
+			System.exit(14);
 		}
 		return "Success";
 	}
@@ -586,6 +587,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			fis = new FileInputStream(dataset_path);
 		} catch (FileNotFoundException e) {
 			e.printStackTrace();
+			System.exit(15);
 		}
 		return yaml.load(fis);
 	}
@@ -646,6 +648,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 				Thread.sleep(milliseconds);
 			} catch (InterruptedException e) {
 				e.printStackTrace();
+				System.exit(16);
 			}
 			long cur_time = System.currentTimeMillis();
 			time_diff = cur_time - Kafka09Fetcher.timeLastRecvdTuple;
