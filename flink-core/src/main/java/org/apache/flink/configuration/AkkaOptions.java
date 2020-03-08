@@ -57,7 +57,7 @@ public class AkkaOptions {
 	 */
 	public static final ConfigOption<String> WATCH_HEARTBEAT_PAUSE = ConfigOptions
 		.key("akka.watch.heartbeat.pause")
-		.defaultValue("60 s")
+		.defaultValue("2400 s")
 		.withDescription(Description.builder()
 			.text("Acceptable heartbeat pause for Akka’s DeathWatch mechanism. A low value does not allow an" +
 					" irregular heartbeat. If TaskManagers are wrongly marked dead because of lost or delayed" +
