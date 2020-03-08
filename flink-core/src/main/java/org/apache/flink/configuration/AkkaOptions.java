@@ -34,7 +34,7 @@ public class AkkaOptions {
 	 */
 	public static final ConfigOption<String> ASK_TIMEOUT = ConfigOptions
 		.key("akka.ask.timeout")
-		.defaultValue("10 s")
+		.defaultValue("600 s")
 		.withDescription("Timeout used for all futures and blocking Akka calls. If Flink fails due to timeouts then you" +
 			" should try to increase this value. Timeouts can be caused by slow machines or a congested network. The" +
 			" timeout value requires a time-unit specifier (ms/s/min/h/d).");
