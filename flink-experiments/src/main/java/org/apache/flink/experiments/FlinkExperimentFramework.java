@@ -19,7 +19,6 @@ import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrderness
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer010;
-import org.apache.flink.streaming.connectors.kafka.internal.Kafka09Fetcher;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.java.StreamTableEnvironment;
@@ -27,20 +26,22 @@ import org.apache.flink.types.Row;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.Serializable;
+import java.io.*;
 import java.sql.Timestamp;
 import java.util.*;
 
 @SuppressWarnings("unchecked")
 public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
+	private static final Logger LOG = LoggerFactory.getLogger(FlinkExperimentFramework.class);
 	static long timeLastRecvdTuple = 0;
 	int batch_size;
 	int pktsPublished;
 	int interval_wait;
+	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
 	String trace_output_folder;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
@@ -83,10 +84,13 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
-		producer = new KafkaProducer<>(props);
 	}
 
-	public void setNodeId(int nodeId) {FlinkExperimentFramework.nodeId = nodeId;}
+	public void setNodeId(int nodeId) {
+		FlinkExperimentFramework.nodeId = nodeId;
+		props.put("client.id", Integer.toString(nodeId));
+		producer = new KafkaProducer<>(props);
+	}
 
 	public void SetTraceOutputFolder(String f) {this.trace_output_folder = f;}
 
@@ -148,7 +152,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}
 
-	final static int[] cnt = {0};
+	volatile static int[] cnt = {0};
 
 	private static class TimestampsAndWatermarks extends BoundedOutOfOrdernessTimestampExtractor<Row> {
 		public TimestampsAndWatermarks() {
@@ -167,7 +171,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		int stream_id = (int) schema.get("stream-id");
 		String stream_name = (String) schema.get("name");
 		String topic = stream_name + "-" + FlinkExperimentFramework.nodeId;
-		//System.out.println("Subscribing to kafka topic " + topic);
+		System.out.println("Subscribing to kafka topic " + topic);
 		FlinkKafkaConsumer010<Row> consumer = new FlinkKafkaConsumer010<>(topic, streamIdToSerializationSchema.get(stream_id), this.props, tf);
 		//sourceFunctions.add(consumer);
 		DataStream<Row> ds = env.addSource(consumer).returns(streamIdToTypeInfo.get(stream_id)).assignTimestampsAndWatermarks(
@@ -185,7 +189,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 					}
 					return 0;
 				}
-			});
+			}).setParallelism(1);
+		//ds.writeAsText("/home/espen/outputFromFlink.txt");
 			/*new BoundedOutOfOrdernessTimestampExtractor<Row>(Time.milliseconds(1)) {
 			  @Override
 			  public long extractTimestamp(Row element) {
@@ -227,10 +232,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			//if (nodeId == 4)
 			//ds.print();
 		SinkFunction<Row> sf = new SinkFunction<Row>() {
+			private final Logger LOG = LoggerFactory.getLogger(SinkFunction.class);
 			@Override
 			public void invoke(Row value) throws Exception {
-				if (++cnt[0] % 10000 == 0)
-					System.out.println( System.nanoTime() + ": Received tuple " + cnt[0]);
+				long newTime = System.currentTimeMillis();
+				++cnt[0];
+				// We only log once every maximum one second, to avoid too many tracepoints
+				if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
+					LOG.info("Received tuple {}", cnt[0]);
+					timeLastRecvdTuple = newTime;
+				}
 			}
 		};
 		regularSinkFunctions.put(stream_id, sf);
@@ -502,7 +513,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		//outputStreamIdToUpdateQueries.clear();
 		threadRunningEnvironment = new Thread(() -> {
 			//System.out.println("Starting environment");
-			Kafka09Fetcher.timeLastRecvdTuple = 0;
+			timeLastRecvdTuple = 0;
 			try {
 				env.execute();
 			} catch (Exception e) {
@@ -512,7 +523,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 				}
 				System.out.println("Stopping the execution environment");
 			}
-			Kafka09Fetcher.timeLastRecvdTuple = 0;
+			timeLastRecvdTuple = 0;
 		});
 		interrupted = false;
 		threadRunningEnvironment.start();
@@ -545,6 +556,18 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 			System.exit(14);
+		}
+		File file = new File(System.getenv("FLINK_BINARIES") + "/log/FlinkWorker.log");
+		try {
+			// Empty contents of the log file
+			new PrintWriter(file);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		try {
+			Runtime.getRuntime().exec(System.getenv("FLINK_BINARIES") + "/bin/cancel-jobs.sh");
+		} catch (IOException e) {
+			e.printStackTrace();
 		}
 		return "Success";
 	}
@@ -642,19 +665,25 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 
 	@Override
 	public String RetEndOfStream(int milliseconds) {
-		long time_diff;
-		do {
-			try {
+		milliseconds += TIMELASTRECEIVEDTHRESHOLD;  // We add waiting time because we don't log every received tuple
+		File file = new File(System.getenv("FLINK_BINARIES") + "/log/FlinkWorker.log");
+		try {
+			// First we wait until the log file is not empty
+			// Importantly, the log file may only contain the logs for when having received tuples
+			long firstLength = file.length();
+			while (file.length() == 0) {
+				firstLength = file.length();
 				Thread.sleep(milliseconds);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-				System.exit(16);
 			}
-			long cur_time = System.currentTimeMillis();
-			time_diff = cur_time - Kafka09Fetcher.timeLastRecvdTuple;
-			System.out.println("RetEndOfStream, time_diff: " + time_diff + ", cur-time: " + cur_time + ", timeLastRecvdTuple: " + Kafka09Fetcher.timeLastRecvdTuple);
-		} while (time_diff < milliseconds || Kafka09Fetcher.timeLastRecvdTuple == 0);
-		return Long.toString(time_diff);
+			while (file.length() != firstLength) {
+				firstLength = file.length();
+				Thread.sleep(milliseconds);
+			}
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+
+		return "Success";
 	}
 
 	@Override
@@ -684,3 +713,4 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		}
 	}
 }
+
