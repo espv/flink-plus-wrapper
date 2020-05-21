@@ -161,7 +161,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		int cnt = 1;
 		boolean finished = false;
 		while (!finished) {
-			String path = csvFolder + "/flink/" + cnt;
+			String path = System.getenv().get("EXPOSE_PATH") + "/" + csvFolder + "/flink/" + cnt;
 			Path p = Paths.get(path);
 			if (Files.exists(p)) {
 				++cnt;
