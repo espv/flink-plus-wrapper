@@ -243,7 +243,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			@Override
 			public void invoke(Row value) throws Exception {
 				//if (++cnt[0] % 10000 == 0)
-				System.out.println( System.nanoTime() + ": Received tuple " + (++cnt[0]));
+				//System.out.println( System.nanoTime() + ": Received tuple " + (++cnt[0]));
 			}
 		};
 		regularSinkFunctions.put(stream_id, sf);
