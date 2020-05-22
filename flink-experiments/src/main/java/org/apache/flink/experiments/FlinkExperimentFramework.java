@@ -474,7 +474,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			Map<String, Object> output_schema = this.allSchemas.get(outputStreamId);
 			String sql_query = ((Map<String, String>) query.get("sql-query")).get("flink");
 			Table result = tableEnv.sqlQuery(sql_query);
-			if ((boolean) output_schema.getOrDefault("intermediary-stream", false)) {
+			if (!(boolean) output_schema.getOrDefault("registered", false) &&
+				(boolean) output_schema.getOrDefault("intermediary-stream", false)) {
+				output_schema.put("registered", true);
 				tableEnv.registerTable(this.streamIdToName.get(outputStreamId), result);
 			} else {
 				// Need to filter out the processing time element
