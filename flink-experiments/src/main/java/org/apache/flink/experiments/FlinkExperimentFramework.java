@@ -706,6 +706,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}
 
+	/* Cluster version of the RetEndOfStream method
 	@Override
 	public String RetEndOfStream(int milliseconds) {
 		milliseconds += TIMELASTRECEIVEDTHRESHOLD;  // We add waiting time because we don't log every received tuple
@@ -727,6 +728,22 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		}
 
 		return "Success";
+	}*/
+
+	@Override
+	public String RetEndOfStream(int milliseconds) {
+		long time_diff;
+		do {
+			try {
+				Thread.sleep(milliseconds);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+			long cur_time = System.currentTimeMillis();
+			time_diff = cur_time - Kafka09Fetcher.timeLastRecvdTuple;
+			System.out.println("RetEndOfStream, time_diff: " + time_diff + ", cur-time: " + cur_time + ", timeLastRecvdTuple: " + Kafka09Fetcher.timeLastRecvdTuple);
+		} while (time_diff < milliseconds || Kafka09Fetcher.timeLastRecvdTuple == 0);
+		return Long.toString(time_diff);
 	}
 
 	@Override
