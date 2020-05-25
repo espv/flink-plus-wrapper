@@ -9,14 +9,12 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import java.nio.file.Path;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
-import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer010;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer010;
 import org.apache.flink.table.api.EnvironmentSettings;
@@ -30,6 +28,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.Serializable;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.io.*;
 import java.sql.Timestamp;
 import java.util.*;
@@ -42,6 +45,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	int pktsPublished;
 	int interval_wait;
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
+	boolean useRowtime = true;
 	String trace_output_folder;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
@@ -49,6 +53,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	Map<Integer, ArrayList<Row> > streamToTuples = new HashMap<>();
 	Map<Integer, ArrayList<Map<String, Object>> > outputStreamIdToFetchQueries = new HashMap<>();
 	Map<Integer, ArrayList<Map<String, Object>> > outputStreamIdToUpdateQueries = new HashMap<>();
+	List<Map<String, Object>> fetchQueries = new ArrayList<>();
 	ArrayList<Map<String, Object>> queries = new ArrayList<>();
 	Map<Integer, Map<String, Object>> allSchemas = new HashMap<>();
 	Map<Integer, TypeInformation<Row>> streamIdToTypeInfo = new HashMap<>();
@@ -73,6 +78,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	Properties props;
 	Map<Integer, KafkaProducer> nodeIdToKafkaProducer = new HashMap<>();
 	Map<Integer, Properties> nodeIdToProperties = new HashMap<>();
+	List<Tuple2<Integer, Row>> all_tuples = new ArrayList<>();
 
 	FlinkExperimentFramework() {
 		props = new Properties();
@@ -117,8 +123,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 
 		for (int nodeId : nodeIdToIpAndPort.keySet()) {
 			String ip = (String) nodeIdToIpAndPort.get(nodeId).get("ip");
-			int port = (int) nodeIdToIpAndPort.get(nodeId).get("port");
-			properties.put("bootstrap.servers", ip+":"+port);
+			properties.put("bootstrap.servers", ip+":9092");
 			nodeIdToProperties.put(nodeId, properties);
 			nodeIdToKafkaProducer.put(nodeId, new KafkaProducer<>(properties));
 		}
@@ -152,20 +157,30 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}
 
-	volatile static int[] cnt = {0};
-
-	private static class TimestampsAndWatermarks extends BoundedOutOfOrdernessTimestampExtractor<Row> {
-		public TimestampsAndWatermarks() {
-			super(Time.milliseconds(1));
+	public String WriteStreamToCsv(int stream_id, String csvFolder) {
+		Map<String, Object> schema = allSchemas.get(stream_id);
+		assert schema != null;
+		DataStream<Row> ds = streamIdToDataStream.get(stream_id);
+		if (ds == null) {
+			AddKafkaConsumer(schema);
 		}
-
-		long cnt = 0;
-		@Override
-		public long extractTimestamp(Row event) {
-			cnt += 1000000000;
-			return cnt;
+		ds = streamIdToDataStream.get(stream_id);
+		int cnt = 1;
+		boolean finished = false;
+		while (!finished) {
+			String path = System.getenv().get("EXPOSE_PATH") + "/" + csvFolder + "/flink/" + cnt;
+			Path p = Paths.get(path);
+			if (Files.exists(p)) {
+				++cnt;
+				continue;
+			}
+			ds.writeAsText(path);
+			finished = true;
 		}
+		return "Success";
 	}
+
+	volatile static int[] cnt = {0};
 
 	private void AddKafkaConsumer(Map<String, Object> schema) {
 		int stream_id = (int) schema.get("stream-id");
@@ -174,7 +189,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		System.out.println("Subscribing to kafka topic " + topic);
 		FlinkKafkaConsumer010<Row> consumer = new FlinkKafkaConsumer010<>(topic, streamIdToSerializationSchema.get(stream_id), this.props, tf);
 		//sourceFunctions.add(consumer);
-		DataStream<Row> ds = env.addSource(consumer).returns(streamIdToTypeInfo.get(stream_id)).assignTimestampsAndWatermarks(
+		DataStream<Row> ds = env.addSource(consumer).returns(streamIdToTypeInfo.get(stream_id))/*.assignTimestampsAndWatermarks(
 			new AscendingTimestampExtractor<Row>() {
 				@Override
 				public long extractAscendingTimestamp(Row element) {
@@ -183,7 +198,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 					}
 					List<Map<String, String>> tuple_format = (ArrayList<Map<String, String>>) schema.get("tuple-format");
 					for (int i = 0; i < element.getArity(); i++) {
-						if (tuple_format.get(i).get("name").equals(((Map<String, Object>) schema.get("rowtime-column")).get("column"))) {
+						String attr_name = tuple_format.get(i).get("name");
+						if (attr_name.equals("eventTime.rowtime")) {
 							return ((Timestamp) element.getField(i)).getTime();
 						}
 					}
@@ -191,6 +207,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 				}
 			}).setParallelism(1);
 		//ds.writeAsText("/home/espen/outputFromFlink.txt");
+			})*/;
 			/*new BoundedOutOfOrdernessTimestampExtractor<Row>(Time.milliseconds(1)) {
 			  @Override
 			  public long extractTimestamp(Row element) {
@@ -227,10 +244,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 																																		  return cnt;
 																																	  }
 																																  })*/ // Add as many fields as your Row has;
-			//envSourceFunctions.put(stream_id, consumer);
+		//envSourceFunctions.put(stream_id, consumer);
 
-			//if (nodeId == 4)
-			//ds.print();
+		//if (nodeId == 4)
+		//ds.print();
 		SinkFunction<Row> sf = new SinkFunction<Row>() {
 			private final Logger LOG = LoggerFactory.getLogger(SinkFunction.class);
 			@Override
@@ -242,6 +259,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 					LOG.info("Received tuple {}", cnt[0]);
 					timeLastRecvdTuple = newTime;
 				}
+				//if (++cnt[0] % 10000 == 0)
+				//System.out.println( System.nanoTime() + ": Received tuple " + (++cnt[0]));
 			}
 		};
 		regularSinkFunctions.put(stream_id, sf);
@@ -254,7 +273,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 
 			fields.append(attribute.get("name"));
 		}
-		tableEnv.registerDataStream(stream_name, ds, fields.toString());
+		String fields_str = fields.toString();
+		if (!useRowtime) {
+			fields_str += ", eventTime.proctime";
+		}
+		tableEnv.registerDataStream(stream_name, ds, fields_str);
 		this.streamIdToDataStream.put(stream_id, ds);
 	}
 
@@ -300,16 +323,40 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	@Override
 	public String SendDsAsStream(Map<String, Object> ds) {
 		//System.out.println("Processing dataset");
-		int stream_id = (int) ds.get("stream-id");
-		List<Map<String, Object>> tuples = datasetIdToTuples.get(stream_id);
-		Map<String, Object> schema = allSchemas.get(stream_id);
+		int ds_id = (int) ds.get("id");
+		List<Map<String, Object>> tuples = datasetIdToTuples.get(ds_id);
 		if (tuples == null) {
 			Map<String, Object> map = GetMapFromYaml(ds);
-			tuples = (ArrayList<Map<String, Object>>) map.get("cepevents");
-			CastTuplesCorrectTypes(tuples, schema);
-			datasetIdToTuples.put(stream_id, tuples);
+			List<Map<String, Object>> raw_tuples = (List<Map<String, Object>>) map.get("cepevents");
+			Map<Integer, List<Map<String, Object>>> ordered_tuples = new HashMap<>();
+			//int i = 0;
+			// Add order to tuples and place them in ordered_tuples
+			for (Map<String, Object> tuple : raw_tuples) {
+				//tuple.put("_order", i++);
+				int tuple_stream_id = (int) tuple.get("stream-id");
+				if (ordered_tuples.get(tuple_stream_id) == null) {
+					ordered_tuples.put(tuple_stream_id, new ArrayList<>());
+				}
+				ordered_tuples.get(tuple_stream_id).add(tuple);
+			}
+
+			// Fix the type of the tuples in ordered_tuples
+			for (int stream_id : ordered_tuples.keySet()) {
+				Map<String, Object> schema = allSchemas.get(stream_id);
+				CastTuplesCorrectTypes(ordered_tuples.get(stream_id), schema);
+			}
+
+			// Sort the raw_tuples by their order
+			/*raw_tuples.sort((lhs, rhs) -> {
+				int lhs_order = (int) lhs.get("_order");
+				int rhs_order = (int) rhs.get("_order");
+				return Integer.compare(lhs_order, rhs_order);
+			});*/
+
+			datasetIdToTuples.put(ds_id, raw_tuples);
+			tuples = raw_tuples;
 		}
-		double prevTimestamp = 0;
+		/*double prevTimestamp = 0;
 		//System.out.println("Ready to transmit tuples");
 		long prevTime = System.nanoTime();
 		boolean realism = (boolean) ds.getOrDefault("realism", false) && schema.containsKey("rowtime-column");
@@ -342,26 +389,33 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 
 		if (!realism) {
 			ProcessTuples(tuples.size());
+		}*/
+
+		for (Map<String, Object> tuple : tuples) {
+			AddTuples(tuple, 1);
 		}
+		ProcessTuples(tuples.size());
 		return "Success";
 	}
 
 	@Override
 	public String AddTuples(Map<String, Object> tuple, int quantity) {
+		int stream_id = (int) tuple.get("stream-id");
 		ArrayList<Map<String, Object> > attributes = (ArrayList<Map<String, Object> >) tuple.get("attributes");
 		Row new_tuple = new Row(attributes.size());
 		for (int i = 0; i < attributes.size(); i++) {
 			Map<String, Object> attribute = attributes.get(i);
 			new_tuple.setField(i, attribute.get("value"));
 		}
-		int stream_id = (int) tuple.get("stream-id");
+		/*int stream_id = (int) tuple.get("stream-id");
 		if (!streamToTuples.containsKey(stream_id)) {
 			streamToTuples.put(stream_id, new ArrayList<>());
 		}
 
 		for (int i = 0; i < quantity; i++) {
 			streamToTuples.get(stream_id).add(new_tuple);
-		}
+		}*/
+		all_tuples.add(new Tuple2<Integer, Row>(stream_id, new_tuple));
 		return "Success";
 	}
 
@@ -377,12 +431,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			TypeInformation<?>[] typeInformations = new TypeInformation[tuple_format.size()];
 			int pos = -1;
 			String rowtime_column = null;
-			if (schema.containsKey("rowtime-column")) {
+			if (useRowtime && schema.containsKey("rowtime-column")) {
 				rowtime_column = ((Map<String, String>)schema.get("rowtime-column")).get("column");
 			}
 			for (Map<String, String> attribute : tuple_format) {
 				pos += 1;
-				if (attribute.get("name") != null && attribute.get("name").equals(rowtime_column)) {
+				if (useRowtime && attribute.get("name") != null && attribute.get("name").equals(rowtime_column)) {
 					attribute.put("name", "eventTime.rowtime");
 				}
 				switch (attribute.get("type")) {
@@ -416,7 +470,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			if (env == null) {
 				env = StreamExecutionEnvironment.getExecutionEnvironment();
 				env.getConfig().disableSysoutLogging();
-				env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+				if (useRowtime) {
+					env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+				} else {
+					env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
+				}
 				tableEnv = StreamTableEnvironment.create(env, fsSettings);
 			}
 
@@ -426,43 +484,38 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}
 
-	int deployedQueries = 0;
-	public void DeployQueries(int outputStreamId) {
-		String outputStreamName = streamIdToName.get(outputStreamId);
-		queries = outputStreamIdToFetchQueries.getOrDefault(outputStreamId, new ArrayList<>());
-		for (Map<String, Object> q : queries) {
-			String sql_query = ((Map<String, String>)q.get("sql-query")).get("flink");
+	public void DeployQueries() {
+		for (Map<String, Object> query : fetchQueries) {
+			int outputStreamId = (int) query.get("output-stream-id");
+			String outputStreamName = streamIdToName.get(outputStreamId);
+			Map<String, Object> output_schema = this.allSchemas.get(outputStreamId);
+			String sql_query = ((Map<String, String>) query.get("sql-query")).get("flink");
 			Table result = tableEnv.sqlQuery(sql_query);
-			DataStream<Row> ds = tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
-				.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1);
-
-			if (streamIdToNodeIds.containsKey(outputStreamId)) {
-				for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
-					//System.out.println("Creating new FlinkKafkaProducer to write to the other node");
-					String topic = outputStreamName + "-" + otherNodeId;
-					FlinkKafkaProducer010<Row> p;
-					if (querySinkFunctions.containsKey(topic)) {
-						p = querySinkFunctions.get(topic);
-					} else {
-						p = new FlinkKafkaProducer010<>(topic, streamIdToSerializationSchema.get(outputStreamId), nodeIdToProperties.get(otherNodeId));
-
-						querySinkFunctions.put(topic, p);
+			if (!(boolean) output_schema.getOrDefault("registered", false) &&
+				(boolean) output_schema.getOrDefault("intermediary-stream", false)) {
+				output_schema.put("registered", true);
+				tableEnv.registerTable(this.streamIdToName.get(outputStreamId), result);
+			} else {
+				// Need to filter out the processing time element
+				DataStream<Row> ds =
+						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
+								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1);
+				if (streamIdToNodeIds.containsKey(outputStreamId)) {
+					for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
+						String topic = outputStreamName + "-" + otherNodeId;
+						FlinkKafkaProducer010<Row> p;
+						if (querySinkFunctions.containsKey(topic)) {
+							p = querySinkFunctions.get(topic);
+						} else {
+							p = new FlinkKafkaProducer010<>(topic,
+									streamIdToSerializationSchema.get(outputStreamId),
+									nodeIdToProperties.get(otherNodeId));
+							querySinkFunctions.put(topic, p);
+						}
+						ds.addSink(p);
 					}
-					ds.addSink(p);
 				}
 			}
-			/*} else {
-				//System.out.println("Creating new FlinkKafkaProducer to write to myself");
-				String topic = outputStreamName + "-" + FlinkExperimentFramework.nodeId;
-				FlinkKafkaProducer010<Row> p = new FlinkKafkaProducer010<>(topic, streamIdToSerializationSchema.get(outputStreamId), nodeIdToProperties.get(FlinkExperimentFramework.nodeId));
-				querySinkFunctions.add(p);
-				ds.addSink(p);
-			}*/
-		}
-		queries = outputStreamIdToUpdateQueries.getOrDefault(outputStreamId, new ArrayList<>());
-		for (Map<String, Object> q : queries) {
-			String sql_query = ((Map<String, String>)q.get("sql-query")).get("flink");
-			tableEnv.sqlUpdate(sql_query);
 		}
 	}
 
@@ -470,21 +523,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	public String DeployQueries(Map<String, Object> query) {
 		int outputStreamId = (int) query.get("output-stream-id");
 		printDataStream.put(outputStreamId, (boolean) query.getOrDefault("print", false));
-		String type_query = (String) query.get("type");
 		tf.traceEvent(221, new Object[]{query.get("id")});
-		if (type_query.equals("fetch-query")) {
-			if (!outputStreamIdToFetchQueries.containsKey(outputStreamId)) {
-				outputStreamIdToFetchQueries.put(outputStreamId, new ArrayList<>());
-			}
-			outputStreamIdToFetchQueries.get(outputStreamId).add(query);
-		} else if (type_query.equals("update-query")) {
-			if (!outputStreamIdToUpdateQueries.containsKey(outputStreamId)) {
-				outputStreamIdToUpdateQueries.put(outputStreamId, new ArrayList<>());
-			}
-			outputStreamIdToUpdateQueries.get(outputStreamId).add(query);
-		} else {
-			throw new RuntimeException("Invalid query type specified");
-		}
+		fetchQueries.add(query);
 		return "Success";
 	}
 
@@ -502,12 +542,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			//	"Stop it with stopRuntimeEnv before running it again.");
 			return "Environment already running";
 		}
-		Set<Integer> streamIds = new HashSet<>();
-		streamIds.addAll(outputStreamIdToFetchQueries.keySet());
-		streamIds.addAll(outputStreamIdToUpdateQueries.keySet());
-		for (int outputStreamId : streamIds) {
-			DeployQueries(outputStreamId);
-		}
+		DeployQueries();
 		//deployedQueries = 0;
 		//outputStreamIdToFetchQueries.clear();
 		//outputStreamIdToUpdateQueries.clear();
@@ -534,23 +569,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	static int cnt3 = 0;
 	@Override
 	public String StopRuntimeEnv() {
-		System.out.println("Before tf.traceEvent(101);");
 		tf.traceEvent(101);
-		System.out.println("Before threadRunningEnvironment.interrupt();");
 		threadRunningEnvironment.interrupt();
-		System.out.println("Before threadRunningEnvironment.join();");
 		threadRunningEnvironment = null;
 
-		System.out.println("Before for (int stream_id : streamIdToDataStream.keySet())");
 		for (int stream_id : streamIdToDataStream.keySet()) {
 			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
-			System.out.println("ds.addSink(regularSinkFunctions.get(stream_id));");
 			ds.addSink(regularSinkFunctions.get(stream_id));
 		}
 
-		System.out.println("Before tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());");
 		tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());
-		System.out.println("Before return \"Success\"");
 		try {
 			Thread.sleep(2000);
 		} catch (InterruptedException e) {
@@ -619,7 +647,24 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	@Override
 	public String ProcessTuples(int number_tuples) {
 		System.out.println("Processing " + number_tuples);
-		for (int stream_id : streamToTuples.keySet()) {
+		for (Tuple2<Integer, Row> tuple : all_tuples) {
+			int stream_id = tuple.f0;
+			Row row = tuple.f1;
+			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
+			String stream_name = (String) allSchemas.get(stream_id).get("name");
+			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
+				String topicName = stream_name + "-" + otherNodeId;
+				//for (Row tuple : streamToTuples.get(stream_id)) {
+				if (++tupleCnt % 100000 == 0) {
+					System.out.println( System.nanoTime() + ": Sending tuple " + (++tupleCnt) + " to node " + otherNodeId + " with topic " + topicName);
+				}
+				this.nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, serializationSchema.serialize(row)));
+				//}
+			}
+		}
+
+
+		/*for (int stream_id : streamToTuples.keySet()) {
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
 			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
@@ -632,7 +677,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 				}
 			}
 		}
-		streamToTuples.clear();
+		streamToTuples.clear();*/
+		all_tuples.clear();
 		pktsPublished = 0;
 		return "Success";
 	}
@@ -696,6 +742,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 
 	public String Configure() {
 		for (Map<String, Object> schema : allSchemas.values()) {
+			if ((boolean) schema.getOrDefault("intermediary-stream", false)) {
+				continue;
+			}
 			AddKafkaConsumer(schema);
 		}
 		return "Success";
@@ -713,4 +762,3 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		}
 	}
 }
-
