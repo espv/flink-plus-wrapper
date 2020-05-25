@@ -142,4 +142,5 @@ buildNumber.properties
 
 # End of https://www.gitignore.io/api/java,maven,intellij
 
-build-target
+build-target/
+node_modules/
