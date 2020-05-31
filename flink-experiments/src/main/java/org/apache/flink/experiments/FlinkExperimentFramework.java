@@ -571,10 +571,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		threadRunningEnvironment.interrupt();
 		threadRunningEnvironment = null;
 
-		/*for (int stream_id : streamIdToDataStream.keySet()) {
+		for (int stream_id : streamIdToDataStream.keySet()) {
 			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
 			ds.addSink(regularSinkFunctions.get(stream_id));
-		}*/
+		}
 
 		Kafka09Fetcher.timeLastRecvdTuple = 0;
 		tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());
