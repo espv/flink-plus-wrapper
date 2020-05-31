@@ -571,6 +571,27 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		threadRunningEnvironment.interrupt();
 		threadRunningEnvironment = null;
 
+		/*for (int stream_id : streamIdToDataStream.keySet()) {
+			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
+			ds.addSink(regularSinkFunctions.get(stream_id));
+		}*/
+
+		tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());
+		try {
+			Thread.sleep(2000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+			System.exit(14);
+		}
+		return "Success";
+	}
+
+	/*@Override
+	public String StopRuntimeEnv() {
+		tf.traceEvent(101);
+		threadRunningEnvironment.interrupt();
+		threadRunningEnvironment = null;
+
 		for (int stream_id : streamIdToDataStream.keySet()) {
 			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
 			ds.addSink(regularSinkFunctions.get(stream_id));
@@ -596,7 +617,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			e.printStackTrace();
 		}
 		return "Success";
-	}
+	}*/
 
 	@Override
 	public String AddDataset(Map<String, Object> ds) {
