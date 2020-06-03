@@ -21,6 +21,7 @@ import org.apache.flink.streaming.connectors.kafka.internal.Kafka09Fetcher;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.java.StreamTableEnvironment;
+import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.types.Row;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
@@ -474,6 +475,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 					env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
 				}
 				tableEnv = StreamTableEnvironment.create(env, fsSettings);
+				tableEnv.registerFunction("DOLTOEUR", new DolToEur());
 			}
 
 			streamIdToTypeInfo.put(stream_id, new RowTypeInfo(typeInformations));
