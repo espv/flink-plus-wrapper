@@ -490,6 +490,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 			String outputStreamName = streamIdToName.get(outputStreamId);
 			Map<String, Object> output_schema = this.allSchemas.get(outputStreamId);
 			String sql_query = ((Map<String, String>) query.get("sql-query")).get("flink");
+			if (sql_query == null) {
+				continue;
+			}
 			Table result = tableEnv.sqlQuery(sql_query);
 			if (!(boolean) output_schema.getOrDefault("registered", false) &&
 				(boolean) output_schema.getOrDefault("intermediary-stream", false)) {
