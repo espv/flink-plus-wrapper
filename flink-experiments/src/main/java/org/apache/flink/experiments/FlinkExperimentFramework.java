@@ -296,6 +296,15 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			fields_str += ", eventTime.proctime";
 		}
 		tableEnv.registerDataStream(stream_name, ds, fields_str);
+
+		class CustomFlatMapFunction implements FlatMapFunction<Row, Row> {
+			@Override
+			public void flatMap(Row row, Collector<Row> out) {
+				out.collect(row);
+			}
+		}
+		CustomFlatMapFunction flatMapFunction = new CustomFlatMapFunction();
+		ds = ds.flatMap(flatMapFunction);
 		this.streamIdToDataStream.put(stream_id, ds);
 	}
 
