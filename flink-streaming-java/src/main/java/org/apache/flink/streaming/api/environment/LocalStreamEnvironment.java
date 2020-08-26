@@ -49,6 +49,8 @@ public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 
 	private final Configuration configuration;
 
+	private MiniCluster miniCluster;
+
 	/**
 	 * Creates a new mini cluster stream environment that uses the default configuration.
 	 */
@@ -73,6 +75,11 @@ public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 
 	protected Configuration getConfiguration() {
 		return configuration;
+	}
+
+	@Override
+	public MiniCluster getMiniCluster() {
+		return miniCluster;
 	}
 
 	/**
@@ -108,7 +115,7 @@ public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 			LOG.info("Running job on local embedded Flink mini cluster");
 		}
 
-		MiniCluster miniCluster = new MiniCluster(cfg);
+		miniCluster = new MiniCluster(cfg);
 
 		try {
 			miniCluster.start();

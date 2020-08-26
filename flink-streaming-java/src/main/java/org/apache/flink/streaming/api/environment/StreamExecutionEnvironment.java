@@ -50,6 +50,7 @@ import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.state.AbstractStateBackend;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.runtime.state.StateBackend;
@@ -1527,6 +1528,10 @@ public abstract class StreamExecutionEnvironment {
 	@Internal
 	public StreamGraph getStreamGraph() {
 		return getStreamGraphGenerator().generate();
+	}
+
+	public MiniCluster getMiniCluster() {
+		return null;
 	}
 
 	/**

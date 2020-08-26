@@ -2,7 +2,10 @@ package org.apache.flink.experiments;
 
 import no.uio.ifi.ExperimentAPI;
 import no.uio.ifi.SpeComm;
+import no.uio.ifi.SpeSpecificAPI;
 import no.uio.ifi.TracingFramework;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.TypeInformationSerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -10,6 +13,18 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import java.nio.file.Path;
+
+import org.apache.flink.client.cli.RunOptions;
+import org.apache.flink.client.program.MiniClusterClient;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.runtime.client.JobStatusMessage;
+import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
+import org.apache.flink.runtime.minicluster.MiniCluster;
+import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -23,6 +38,7 @@ import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.java.StreamTableEnvironment;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -35,9 +51,10 @@ import java.nio.file.Paths;
 import java.io.*;
 import java.sql.Timestamp;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
 
 @SuppressWarnings("unchecked")
-public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
+public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, Serializable {
 	private static final Logger LOG = LoggerFactory.getLogger(FlinkExperimentFramework.class);
 	static long timeLastRecvdTuple = 0;
 	int batch_size;
@@ -56,11 +73,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	ArrayList<Map<String, Object>> queries = new ArrayList<>();
 	Map<Integer, Map<String, Object>> allSchemas = new HashMap<>();
 	Map<Integer, TypeInformation<Row>> streamIdToTypeInfo = new HashMap<>();
-	Map<Integer, TypeInformationSerializationSchema<Row>> streamIdToSerializationSchema = new HashMap<>();
+	static Map<Integer, TypeInformationSerializationSchema<Row>> streamIdToSerializationSchema = new HashMap<>();
 	Map<String, Integer> streamNameToId = new HashMap<>();
 	Map<Integer, String> streamIdToName = new HashMap<>();
 	Map<Integer, Map<String, Object>> nodeIdToIpAndPort = new HashMap<>();
-	Map<Integer, List<Integer>> streamIdToNodeIds = new HashMap<>();
+	static Map<Integer, List<Integer>> streamIdToNodeIds = new HashMap<>();
 	Map<Integer, DataStream<Row> > streamIdToDataStream = new HashMap<>();
 	Map<Integer, List<Map<String, Object>>> datasetIdToTuples = new HashMap<>();
 	Map<Integer, Boolean> printDataStream = new HashMap<>();
@@ -75,7 +92,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	Thread threadRunningEnvironment;
 	static int nodeId;
 	Properties props;
-	Map<Integer, KafkaProducer> nodeIdToKafkaProducer = new HashMap<>();
+	static Map<Integer, KafkaProducer> nodeIdToKafkaProducer = new HashMap<>();
 	Map<Integer, Properties> nodeIdToProperties = new HashMap<>();
 	List<Tuple2<Integer, Row>> all_tuples = new ArrayList<>();
 
@@ -130,28 +147,30 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String AddNextHop(int streamId, int nodeId) {
-		if (!streamIdToNodeIds.containsKey(streamId)) {
-			streamIdToNodeIds.put(streamId, new ArrayList<>());
-		}
-
-		streamIdToNodeIds.get(streamId).add(nodeId);
-		for (Map<String, Object> schema : allSchemas.values()) {
-			if (schema.get("stream-id").equals(streamId)) {
-				String stream_name = (String) schema.get("name");
-				DataStream<Row> ds = streamIdToDataStream.get(streamId);
-				if (ds == null) {
-					AddKafkaConsumer(schema);
-				}
-				ds = streamIdToDataStream.get(streamId);
-				for (int otherNodeId : streamIdToNodeIds.get(streamId)) {
-					String topic = stream_name + "-" + otherNodeId;
-					FlinkKafkaProducer010<Row> p = new FlinkKafkaProducer010<>(topic, streamIdToSerializationSchema.get(streamId), nodeIdToProperties.get(otherNodeId));
-					sinkFunctions.add(p);
-					ds.addSink(p);
-				}
-				break;
+	public String AddNextHop(List<Integer> streamIds, List<Integer> nodeIds) {
+		for (int streamId : streamIds) {
+			if (!streamIdToNodeIds.containsKey(streamId)) {
+				streamIdToNodeIds.put(streamId, new ArrayList<>());
 			}
+
+			streamIdToNodeIds.get(streamId).addAll(nodeIds);
+			/*for (Map<String, Object> schema : allSchemas.values()) {
+				if (schema.get("stream-id").equals(streamId)) {
+					String stream_name = (String) schema.get("name");
+					DataStream<Row> ds = streamIdToDataStream.get(streamId);
+					if (ds == null) {
+						AddKafkaConsumer(schema);
+					}
+					ds = streamIdToDataStream.get(streamId);
+					for (int otherNodeId : streamIdToNodeIds.get(streamId)) {
+						String topic = stream_name + "-" + otherNodeId;
+						FlinkKafkaProducer010<Row> p = new FlinkKafkaProducer010<>(topic, streamIdToSerializationSchema.get(streamId), nodeIdToProperties.get(otherNodeId));
+						sinkFunctions.add(p);
+						ds.addSink(p);
+					}
+					break;
+				}
+			}*/
 		}
 		return "Success";
 	}
@@ -320,7 +339,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
-	public String SendDsAsStream(Map<String, Object> ds) {
+	public String SendDsAsStream(Map<String, Object> ds, int iterations, boolean realism) {
 		//System.out.println("Processing dataset");
 		int ds_id = (int) ds.get("id");
 		List<Map<String, Object>> tuples = datasetIdToTuples.get(ds_id);
@@ -397,7 +416,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}
 
-	@Override
 	public String AddTuples(Map<String, Object> tuple, int quantity) {
 		int stream_id = (int) tuple.get("stream-id");
 		ArrayList<Map<String, Object> > attributes = (ArrayList<Map<String, Object> >) tuple.get("attributes");
@@ -504,19 +522,24 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
 								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1);
 				if (streamIdToNodeIds.containsKey(outputStreamId)) {
-					for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
-						String topic = outputStreamName + "-" + otherNodeId;
-						FlinkKafkaProducer010<Row> p;
-						if (querySinkFunctions.containsKey(topic)) {
-							p = querySinkFunctions.get(topic);
-						} else {
-							p = new FlinkKafkaProducer010<>(topic,
-									streamIdToSerializationSchema.get(outputStreamId),
-									nodeIdToProperties.get(otherNodeId));
-							querySinkFunctions.put(topic, p);
+					class CustomFlatMapFunction implements FlatMapFunction<Row, Object> {
+						public final int outputStreamId;
+						CustomFlatMapFunction(int outputStreamId) {
+							this.outputStreamId = outputStreamId;
 						}
-						ds.addSink(p);
+
+						@Override
+						public void flatMap(Row row, Collector<Object> out) {
+							TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
+							for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
+								String topic = outputStreamName + "-" + otherNodeId;
+								nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+							}
+						}
 					}
+
+					CustomFlatMapFunction flatMapFunction = new CustomFlatMapFunction(outputStreamId);
+					ds.flatMap(flatMapFunction);
 				}
 			}
 		}
@@ -531,12 +554,31 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}
 
+	MiniClusterClient client;
+	JobID jobID;
+	String savepointPath;
 	@Override
 	public String StartRuntimeEnv() {
 		if (interrupted) {
 			System.out.println("Still waiting for the runtime environment to interrupt!");
 			return "Error, runtime environment has not exited from its previous execution";
 		}
+
+		/*Configuration mcConfig = new Configuration();
+		mcConfig.setString(TaskManagerOptions.MANAGED_MEMORY_SIZE, "80m");
+		mcConfig.setInteger(JobManagerOptions.PORT, 0);
+		mcConfig.setString(RestOptions.BIND_PORT, "0");
+		MiniClusterConfiguration config = new MiniClusterConfiguration.Builder()
+				.setNumTaskManagers(2)
+				.setNumSlotsPerTaskManager(2)
+				.setConfiguration(mcConfig).build();
+		MiniCluster cluster = new MiniCluster(config);
+		try {
+			cluster.start();
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		MiniClusterClient client = new MiniClusterClient(new Configuration(), cluster);*/
 
 		if (threadRunningEnvironment != null && threadRunningEnvironment.isAlive()) {
 			//throw new RuntimeException("The execution environment is already running. " +
@@ -565,6 +607,41 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		});
 		interrupted = false;
 		threadRunningEnvironment.start();
+
+		try {
+			Thread.sleep(2000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		MiniCluster cluster = env.getMiniCluster();
+		client = new MiniClusterClient(new Configuration(), cluster);
+
+		try {
+			Thread.sleep(2000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		System.out.println("Job ID: " + jobID);
+		try {
+			System.out.println("Client Job IDs:");
+			assert client.listJobs().get().size() == 1;
+			for (JobStatusMessage msg : client.listJobs().get()) {
+				// I assume we only have a single job running
+				this.jobID = msg.getJobId();
+			}
+			System.out.println("Cluster Job status: " + cluster.getJobStatus(jobID).get());
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		} catch (ExecutionException e) {
+			e.printStackTrace();
+		}
+		try {
+			savepointPath = client.triggerSavepoint(this.jobID, System.getenv("FLINK_BINARIES") + "/savepoints").get();
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		} catch (ExecutionException e) {
+			e.printStackTrace();
+		}
 		return "Success";
 	}
 
@@ -573,6 +650,27 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	@Override
 	public String StopRuntimeEnv() {
 		tf.traceEvent(101);
+		SavepointRestoreSettings savepointSettings = SavepointRestoreSettings.forPath(savepointPath);
+		System.out.println("savepointSettings.restoreSavepoint() success: " + savepointSettings.restoreSavepoint());
+		//client.triggerSavepoint(this.jobID, System.getenv("FLINK_BINARIES") + "/savepoints");
+
+		try {
+			Thread.sleep(2000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+
+		try {
+			client.cancel(jobID);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+
+		try {
+			Thread.sleep(2000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
 		threadRunningEnvironment.interrupt();
 		threadRunningEnvironment = null;
 
@@ -625,36 +723,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		return "Success";
 	}*/
 
-	@Override
-	public String AddDataset(Map<String, Object> ds) {
-		String datasetType = (String) ds.get("type");
-		int stream_id = (int) ds.get("stream-id");
-
-		if (datasetType.equals("csv")) {
-			/*String file_name = (String) ds.get("file");
-			RowTypeInfo typeInfo = streamIdToTypeInfo.get(stream_id);
-			TupleCsvInputFormat<Row> inputFormat = new RowCsvInputFormat(new Path(file_name), typeInfo);
-			DataSet<Row> csv = new DataSource<>(execenv, inputFormat, typeInfo, Utils.getCallLocationName());
-			try {
-				ArrayList<Row> tuples = (ArrayList<Row>) csv.collect();
-				allPackets = tuples;
-				streamToTuples.put(stream_id, tuples);
-				csv.print();
-			} catch (Exception e) {
-				e.printStackTrace();
-			}*/
-		} else if (ds.get("type").equals("yaml")) {
-			Map<String, Object> map = GetMapFromYaml(ds);
-			ArrayList<Map<String, Object> > tuples = (ArrayList<Map<String, Object> >) map.get("cepevents");
-			for (Map<String, Object> tuple : tuples) {
-				AddTuples(tuple, 1);
-			}
-		} else {
-			throw new RuntimeException("Invalid dataset type for dataset with Id " + ds.get("id"));
-		}
-		return "Success";
-	}
-
 	private Map<String, Object> GetMapFromYaml(Map<String, Object> ds) {
 		FileInputStream fis = null;
 		Yaml yaml = new Yaml();
@@ -669,7 +737,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	int tupleCnt = 0;
-	@Override
 	public String ProcessTuples(int number_tuples) {
 		System.out.println("Processing " + number_tuples);
 		for (Tuple2<Integer, Row> tuple : all_tuples) {
@@ -712,11 +779,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	public String ClearQueries() {
 		tf.traceEvent(222);
 		queries.clear();
-		return "Success";
-	}
-
-	@Override
-	public String ClearTuples() {
 		return "Success";
 	}
 
@@ -775,11 +837,162 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 	}
 
 	@Override
+	public String RetReceivedXTuples(int numberTuples) {
+		return null;
+	}
+
+	@Override
+	public String Wait(int milliseconds) {
+		try {
+			Thread.sleep(milliseconds);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+
+		return "Success";
+	}
+
+	@Override
 	public String TraceTuple(int tracepointId, List<String> arguments) {
 		System.out.println("TraceTuple, tracepointId: " + tracepointId + ", arguments: " + arguments);
 		tf.traceEvent(tracepointId, arguments.toArray());
 		System.out.println("After tracing");
 		return "Success";
+	}
+
+	@Override
+	public String MoveQueryState(int query_id, int new_host) {
+		// Savepoint here, and send it to the new host
+		/*byte[] snapshot = queryIdToSiddhiAppRuntime.get(query_id).snapshot();
+		// If tuples are currently being processed, the snapshot will contain them.
+		// If a new tuple is received between the snapshot is received above and the
+		// runtime environment is shut down below, there is a lock that prevents a conflict
+		// from occurring. The lock currently has flaws that need to be fixed.
+		queryIdToSiddhiAppRuntime.get(query_id).shutdown();
+		queryIdToSiddhiAppRuntime.remove(query_id);
+		if (queryIdToSiddhiAppRuntime.isEmpty()) {
+			StartSiddhiAppRuntime();
+		}
+		Map<String, Object> task = new HashMap<>();
+		task.put("task", "loadQueryState");
+		List<Object> task_args = new ArrayList<>();
+		task_args.add(snapshot);
+		Map<String, Object> map_query = queryIdToMapQuery.get(query_id);
+		task_args.add(map_query);
+		Map<Integer, List<Integer>> streamIdsToNodeIds = queryIdToStreamIdToNodeIds.getOrDefault(query_id, new HashMap<>());
+		task_args.add(streamIdsToNodeIds);
+		task.put("arguments", task_args);
+		task.put("node", Collections.singletonList(new_host));
+		speComm.speCoordinatorComm.SendToSpe(task);*/
+		return null;
+	}
+
+	public String LoadQueryState(byte[] snapshot, Map<String, Object> map_query, Map<Integer, List<Integer>> stream_ids_to_source_node_ids) {
+		DeployQueries(map_query);
+		int query_id = (int) map_query.get("id");
+		/*queryIdToStreamIdToNodeIds.put(query_id, stream_ids_to_source_node_ids);
+		String query = (String) ((Map<String, Object>) map_query.get("sql-query")).get("siddhi");
+		try {
+			StringBuilder schemasString = new StringBuilder();
+			for (String siddhiSchema : siddhiSchemas.values()) {
+				schemasString.append(siddhiSchema);
+			}
+			queryIdToSiddhiAppRuntime.put(query_id, siddhiManager.createSiddhiAppRuntime(schemasString.toString() + "\n" + query));
+			int output_stream_id = queryIdToOutputStreamId.get(query_id);
+			String output_stream_name = streamIdToName.get(output_stream_id);
+			queryIdToSiddhiAppRuntime.get(query_id).addCallback(output_stream_name, streamIdToStreamCallbacks.get(output_stream_id));
+			queryIdToSiddhiAppRuntime.get(query_id).start();
+			queryIdToSiddhiAppRuntime.get(query_id).restore(snapshot);
+		} catch (CannotRestoreSiddhiAppStateException e) {
+			e.printStackTrace();
+			System.exit(21);
+		}*/
+
+		ResumeStream(new ArrayList<>(stream_ids_to_source_node_ids.keySet()));
+		return "Success";
+	}
+
+	@Override
+	public String MoveStaticQueryState(int query_id, int new_host) {
+		return null;
+	}
+
+	@Override
+	public String MoveDynamicQueryState(int query_id, int new_host) {
+		return null;
+	}
+
+	@Override
+	public String ResumeStream(List<Integer> stream_id_list) {
+		return null;
+	}
+
+	@Override
+	public String StopStream(List<Integer> stream_id_list) {
+		return null;
+	}
+
+	@Override
+	public String BufferStream(List<Integer> stream_id_list) {
+		return null;
+	}
+
+	@Override
+	public String BufferAndStopStream(List<Integer> stream_id_list) {
+		return null;
+	}
+
+	@Override
+	public String BufferStopAndRelayStream(List<Integer> stream_id_list, List<Integer> old_host_list, List<Integer> new_host_list) {
+		return null;
+	}
+
+	@Override
+	public String RelayStream(List<Integer> stream_id_list, List<Integer> old_host_list, List<Integer> new_host_list) {
+		RemoveNextHop(stream_id_list, old_host_list);
+		AddNextHop(stream_id_list, new_host_list);
+		return "Success";
+	}
+
+	@Override
+	public String RemoveNextHop(List<Integer> stream_id_list, List<Integer> host_list) {
+		for (int stream_id : stream_id_list) {
+			for (int i = 0; i < streamIdToNodeIds.get(stream_id).size(); i++) {
+				for (int host : host_list) {
+					if (streamIdToNodeIds.get(stream_id).get(i) == host) {
+						streamIdToNodeIds.get(stream_id).remove(i);
+						break;
+					}
+				}
+			}
+		}
+
+		return "Success";
+	}
+
+	@Override
+	public String AddSourceNodes(int query_id, List<Integer> stream_id_list, List<Integer> node_id_list) {
+		return null;
+	}
+
+	@Override
+	public String SetAsPotentialHost(List<Integer> stream_id_list) {
+		return null;
+	}
+
+	@Override
+	public String WaitForStoppedStreams(List<Integer> node_id_list, List<Integer> stream_id_list) {
+		return null;
+	}
+
+	@Override
+	public void LockExecution() {
+
+	}
+
+	@Override
+	public void UnlockExecution() {
+
 	}
 
 	public String Configure() {
@@ -796,11 +1009,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, Serializable {
 		boolean continue_running = true;
 		while (continue_running) {
 			FlinkExperimentFramework experimentAPI = new FlinkExperimentFramework();
-			SpeComm speComm = new SpeComm(args, experimentAPI);
+			SpeComm speComm = new SpeComm(args, experimentAPI, experimentAPI);
 			experimentAPI.setNodeId(speComm.GetNodeId());
 			experimentAPI.SetTraceOutputFolder(speComm.GetTraceOutputFolder());
 			experimentAPI.setNodeId(speComm.GetNodeId());
 			speComm.AcceptTasks();
 		}
+	}
+
+	@Override
+	public void HandleSpeSpecificTask(Map<String, Object> map) {
+
 	}
 }
