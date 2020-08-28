@@ -75,6 +75,7 @@ public class Kafka09Fetcher<T> extends AbstractFetcher<T, TopicPartition> {
 
 	public TracingFramework tf = null;
 	public static long timeLastRecvdTuple = 0;
+	public static long receivedTuples = 0;
 
 	// ------------------------------------------------------------------------
 
@@ -162,6 +163,7 @@ public class Kafka09Fetcher<T> extends AbstractFetcher<T, TopicPartition> {
 						emitRecord(value, partition, record.offset(), record);
 						tf.traceEvent(100);
 						Kafka09Fetcher.timeLastRecvdTuple = System.currentTimeMillis();
+						++Kafka09Fetcher.receivedTuples;
 						//System.out.println("100");
 					}
 				}
