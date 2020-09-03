@@ -4,6 +4,7 @@ import no.uio.ifi.ExperimentAPI;
 import no.uio.ifi.SpeComm;
 import no.uio.ifi.SpeSpecificAPI;
 import no.uio.ifi.TracingFramework;
+import org.apache.commons.collections.ArrayStack;
 import org.apache.commons.io.FileUtils;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.functions.FlatMapFunction;
@@ -91,6 +92,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	static TracingFramework tf = new TracingFramework();
 	Producer<String, byte[]> producer;
 	Map<Integer, SourceFunction<Row>> envSourceFunctions = new HashMap<>();
+	List<FlinkKafkaConsumer010<Row>> consumers = new ArrayList<>();
+	long kafkaConsumerOffset = 0;
 
 	SpeComm speComm;
 
@@ -238,6 +241,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		String topic = stream_name + "-" + FlinkExperimentFramework.nodeId;
 		System.out.println("Subscribing to kafka topic " + topic);
 		FlinkKafkaConsumer010<Row> consumer = new FlinkKafkaConsumer010<>(topic, streamIdToSerializationSchema.get(stream_id), this.props, tf);
+		consumers.add(consumer);
 		DataStream<Row> ds = env.addSource(consumer).returns(streamIdToTypeInfo.get(stream_id));
 		SinkFunction<Row> sf = new SinkFunction<Row>() {
 			private final Logger LOG = LoggerFactory.getLogger(SinkFunction.class);
@@ -865,9 +869,13 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Restore: " + savepointRestoreSettings.restoreSavepoint());
 		System.out.println("Allow restore state: " + savepointRestoreSettings.allowNonRestoredState());
 		try {
+			kafkaConsumerOffset = System.currentTimeMillis();
 			threadRunningEnvironment.interrupt();
 		} catch (Exception e) {
 			e.printStackTrace();
+		}
+		for (FlinkKafkaConsumer010<Row> consumer : consumers) {
+			consumer.setStartFromTimestamp(kafkaConsumerOffset);
 		}
 		for (int stream_id : streamIdToDataStream.keySet()) {
 			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
