@@ -25,6 +25,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.streaming.api.graph.StreamGraph;
@@ -48,8 +49,6 @@ public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 	private static final Logger LOG = LoggerFactory.getLogger(LocalStreamEnvironment.class);
 
 	private final Configuration configuration;
-
-	private MiniCluster miniCluster;
 
 	/**
 	 * Creates a new mini cluster stream environment that uses the default configuration.
@@ -77,11 +76,6 @@ public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 		return configuration;
 	}
 
-	@Override
-	public MiniCluster getMiniCluster() {
-		return miniCluster;
-	}
-
 	/**
 	 * Executes the JobGraph of the on a mini cluster of ClusterUtil with a user
 	 * specified name.
@@ -92,6 +86,10 @@ public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 	public JobExecutionResult execute(StreamGraph streamGraph) throws Exception {
 		JobGraph jobGraph = streamGraph.getJobGraph();
 		jobGraph.setAllowQueuedScheduling(true);
+		if (savepointRestoreSettings != null) {
+			jobGraph.setSavepointRestoreSettings(savepointRestoreSettings);
+			savepointRestoreSettings = null;
+		}
 
 		Configuration configuration = new Configuration();
 		configuration.addAll(jobGraph.getJobConfiguration());

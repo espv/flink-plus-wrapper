@@ -50,6 +50,7 @@ import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.state.AbstractStateBackend;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
@@ -124,6 +125,10 @@ public abstract class StreamExecutionEnvironment {
 
 	/** The default parallelism used when creating a local environment. */
 	private static int defaultLocalParallelism = Runtime.getRuntime().availableProcessors();
+
+	protected MiniCluster miniCluster;
+
+	protected SavepointRestoreSettings savepointRestoreSettings;
 
 	// ------------------------------------------------------------------------
 
@@ -1531,7 +1536,11 @@ public abstract class StreamExecutionEnvironment {
 	}
 
 	public MiniCluster getMiniCluster() {
-		return null;
+		return miniCluster;
+	}
+
+	public void setSavepointRestoreSettings(SavepointRestoreSettings savepointRestoreSettings) {
+		this.savepointRestoreSettings = savepointRestoreSettings;
 	}
 
 	/**
