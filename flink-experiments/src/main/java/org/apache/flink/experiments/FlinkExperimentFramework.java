@@ -222,20 +222,25 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	volatile static int[] cnt = {0};
 
+	long timestampForKafkaConsumer = 0;
 	private void AddKafkaConsumer(Map<String, Object> schema) {
 		int stream_id = (int) schema.get("stream-id");
 		String stream_name = (String) schema.get("name");
 		String topic = stream_name + "-" + FlinkExperimentFramework.nodeId;
-		System.out.println("Subscribing to kafka topic " + topic);
+		//System.out.println("Subscribing to kafka topic " + topic);
 		FlinkKafkaConsumer010<Row> consumer = new FlinkKafkaConsumer010<>(topic, streamIdToSerializationSchema.get(stream_id), this.props, tf);
-		consumers.add(consumer);
-		DataStream<Row> ds = env.addSource(consumer).returns(streamIdToTypeInfo.get(stream_id));
+		if (timestampForKafkaConsumer != 0) {
+			consumer.setStartFromTimestamp(timestampForKafkaConsumer);
+			timestampForKafkaConsumer = 0;
+		}
+		DataStream<Row> ds = env.addSource(consumer).uid("stream-" + stream_id).returns(streamIdToTypeInfo.get(stream_id));
 		SinkFunction<Row> sf = new SinkFunction<Row>() {
 			private final Logger LOG = LoggerFactory.getLogger(SinkFunction.class);
 			@Override
 			public void invoke(Row value) {
 				long newTime = System.currentTimeMillis();
 				++cnt[0];
+				//System.out.println("Received row: " + value);
 				//System.out.println("Received tuple " + cnt[0]);
 				// We only log once every maximum one second, to avoid too many tracepoints
 				if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
@@ -266,6 +271,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 			@Override
 			public void flatMap(Row row, Collector<Row> out) {
+				//System.out.println("Received tuple");
 				/*if (stream_id == 0) {
 					String raw_stream_id_list = (String) event.getData()[0];
 					List<Integer> stream_id_list = new ArrayList<>();
@@ -511,7 +517,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				// Need to filter out the processing time element
 				DataStream<Row> ds =
 						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
-								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1);
+								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1)
+								.uid("query-" + query.get("id"));
 				if (streamIdToNodeIds.containsKey(outputStreamId)) {
 					class CustomFlatMapFunction implements FlatMapFunction<Row, Object> {
 						public final int outputStreamId;
@@ -600,20 +607,23 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String StopRuntimeEnv() {
 		tf.traceEvent(101);
 
+		interrupted = true;
 		threadRunningEnvironment.interrupt();
-		threadRunningEnvironment = null;
 
-		for (int stream_id : streamIdToDataStream.keySet()) {
-			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
-			ds.addSink(regularSinkFunctions.get(stream_id));
+		env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.getConfig().disableSysoutLogging();
+		if (useRowtime) {
+			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+		} else {
+			env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
 		}
+		tableEnv = StreamTableEnvironment.create(env, fsSettings);
+		tableEnv.registerFunction("DOLTOEUR", new DolToEur());
+		Configure();
 
 		tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());
-		try {
-			Thread.sleep(2000);
-		} catch (InterruptedException e) {
-			e.printStackTrace();
-		}
+
+		while (threadRunningEnvironment.isAlive());
 		return "Success";
 	}
 
@@ -751,6 +761,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		while (!env.getMiniCluster().isRunning()) {
 
 		}
+		long timestamp = 0;
 		try {
 			while (env.getMiniCluster().listJobs().get().size() == 0) {
 				Thread.yield();
@@ -760,6 +771,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				Thread.yield();
 			}
 
+			timestamp = System.currentTimeMillis();
 			boolean repeat = true;
 			while (repeat) {
 				repeat = false;
@@ -790,11 +802,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 			}
 			System.out.println("Waiting for savepoint file (absolute) " + file.getAbsolutePath() + " to be created");
-			/*try {
-				Thread.sleep(2000);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}*/
 		}
 		try {
 			snapshot = FileUtils.readFileToByteArray(file);
@@ -810,36 +817,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task_args.add(parentFolderName);
 		Map<Integer, List<Integer>> streamIdsToNodeIds = queryIdToStreamIdToNodeIds.getOrDefault(query_id, new HashMap<>());
 		task_args.add(streamIdsToNodeIds);
+		task_args.add(timestamp);
 		task.put("arguments", task_args);
 		task.put("node", Collections.singletonList(new_host));
 		speComm.speCoordinatorComm.SendToSpe(task);
-
-		/*byte[] snapshot = queryIdToSiddhiAppRuntime.get(query_id).snapshot();
-		// If tuples are currently being processed, the snapshot will contain them.
-		// If a new tuple is received between the snapshot is received above and the
-		// runtime environment is shut down below, there is a lock that prevents a conflict
-		// from occurring. The lock currently has flaws that need to be fixed.
-		queryIdToSiddhiAppRuntime.get(query_id).shutdown();
-		queryIdToSiddhiAppRuntime.remove(query_id);
-		if (queryIdToSiddhiAppRuntime.isEmpty()) {
-			StartSiddhiAppRuntime();
-		}
-		Map<String, Object> task = new HashMap<>();
-		task.put("task", "loadQueryState");
-		List<Object> task_args = new ArrayList<>();
-		task_args.add(snapshot);
-		Map<String, Object> map_query = queryIdToMapQuery.get(query_id);
-		task_args.add(map_query);
-		Map<Integer, List<Integer>> streamIdsToNodeIds = queryIdToStreamIdToNodeIds.getOrDefault(query_id, new HashMap<>());
-		task_args.add(streamIdsToNodeIds);
-		task.put("arguments", task_args);
-		task.put("node", Collections.singletonList(new_host));
-		speComm.speCoordinatorComm.SendToSpe(task);*/
 		return "Success";
 	}
 
-	public String LoadQueryState(byte[] snapshot, Map<String, Object> map_query, String savepointName, Map<Integer, List<Integer>> stream_ids_to_source_node_ids) {
-		int outputStreamId = (int) map_query.get("output-stream-id");
+	public String LoadQueryState(byte[] snapshot, Map<String, Object> map_query, String savepointName, Map<Integer, List<Integer>> stream_ids_to_source_node_ids, long timestamp) {
 		int query_id = (int) map_query.get("id");
 		queryIdToStreamIdToNodeIds.put(query_id, stream_ids_to_source_node_ids);
 		// Write snapshot to savepoints/received_savepoints/savepointName
@@ -850,45 +835,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			e.printStackTrace();
 		}
 
+		this.timestampForKafkaConsumer = timestamp;
 		System.out.println("Restoring query state from savepoint " + savepointPath);
 		// Restore the snapshot
 		savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, true);
-		System.out.println("Restore: " + savepointRestoreSettings.restoreSavepoint());
-		System.out.println("Allow restore state: " + savepointRestoreSettings.allowNonRestoredState());
-		try {
-			kafkaConsumerOffset = System.currentTimeMillis();
-			threadRunningEnvironment.interrupt();
-		} catch (Exception e) {
-			e.printStackTrace();
-		}
-		for (FlinkKafkaConsumer010<Row> consumer : consumers) {
-			consumer.setStartFromTimestamp(kafkaConsumerOffset);
-		}
-		for (int stream_id : streamIdToDataStream.keySet()) {
-			DataStream<Row> ds = streamIdToDataStream.get(stream_id);
-			ds.addSink(regularSinkFunctions.get(stream_id));
-		}
-		while (threadRunningEnvironment.isAlive());
 		DeployQueries(map_query);
-		DeployQueries();
-		threadRunningEnvironment = new Thread(() -> {
-			env.setSavepointRestoreSettings(savepointRestoreSettings);
-			//env.getStreamGraph().getJobGraph().setSavepointRestoreSettings(savepointRestoreSettings);
-			try {
-				env.execute();
-			} catch (Exception e) {
-				if (!interrupted) {
-					// This interrupt was not because of us
-					e.printStackTrace();
-				}
-				System.out.println("Stopping the execution environment");
-			}
-		});
-		threadRunningEnvironment.start();
-		savepointRestoreSettings = null;
-
-		//streamIdToNodeIds.computeIfAbsent(outputStreamId, k -> new ArrayList<>());
-		//streamIdToNodeIds.get(outputStreamId).addAll(stream_ids_to_source_node_ids.get(outputStreamId));
+		StopRuntimeEnv();
+		env.setSavepointRestoreSettings(savepointRestoreSettings);
+		StartRuntimeEnv();
 
 		ResumeStream(new ArrayList<>(stream_ids_to_source_node_ids.keySet()));
 		return "Success";
@@ -910,8 +864,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			streamIdActive.put(stream_id, true);
 			streamIdBuffer.put(stream_id, false);
 		}
+		return "Success";
 
-		for (Tuple2<Integer, Row> incoming_tuple : incomingTupleBuffer) {
+		/*for (Tuple2<Integer, Row> incoming_tuple : incomingTupleBuffer) {
 			// Send tuple on Kafka topic to myself
 			int outputStreamId = incoming_tuple.f0;
 			String outputStreamName = streamIdToName.get(outputStreamId);
@@ -932,8 +887,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				String topic = outputStreamName + "-" + otherNodeId;
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 			}
-		}
-		return "Success";
+		}*/
+		//return "Success";
 	}
 
 	@Override
@@ -1071,7 +1026,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				Map<String, Object> query = (Map<String, Object>) args.get(1);
 				String savepointFileName = (String) args.get(2);
 				Map<Integer, List<Integer>> stream_ids_to_node_ids = (Map<Integer, List<Integer>>) args.get(3);
-				LoadQueryState(snapshot, query, savepointFileName, stream_ids_to_node_ids);
+				long timestamp = (long) args.get(4);
+				LoadQueryState(snapshot, query, savepointFileName, stream_ids_to_node_ids, timestamp);
 				break;
 			} default:
 				throw new RuntimeException("Invalid task from mediator: " + cmd);
