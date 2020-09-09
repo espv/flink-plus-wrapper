@@ -17,6 +17,7 @@ import org.apache.flink.client.program.MiniClusterClient;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.minicluster.MiniCluster;
+import org.apache.flink.runtime.state.filesystem.FsStateBackend;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -80,7 +81,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	Producer<String, byte[]> producer;
 	Map<Integer, SourceFunction<Row>> envSourceFunctions = new HashMap<>();
 	List<FlinkKafkaConsumer010<Row>> consumers = new ArrayList<>();
-	long kafkaConsumerOffset = 0;
+	long timestampForKafkaConsumer = 0;
 
 	SpeComm speComm;
 
@@ -222,7 +223,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	volatile static int[] cnt = {0};
 
-	long timestampForKafkaConsumer = 0;
 	private void AddKafkaConsumer(Map<String, Object> schema) {
 		int stream_id = (int) schema.get("stream-id");
 		String stream_name = (String) schema.get("name");
@@ -406,10 +406,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			ProcessTuples(tuples.size());
 		}*/
 
-		for (Map<String, Object> tuple : tuples) {
-			AddTuples(tuple, 1);
+		for (int i = 0; i < iterations; i++) {
+			for (Map<String, Object> tuple : tuples) {
+				AddTuples(tuple, 1);
+			}
 		}
-		ProcessTuples(tuples.size());
+		ProcessTuples(iterations * tuples.size());
 		return "Success";
 	}
 
@@ -429,7 +431,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (int i = 0; i < quantity; i++) {
 			streamToTuples.get(stream_id).add(new_tuple);
 		}*/
-		all_tuples.add(new Tuple2<Integer, Row>(stream_id, new_tuple));
+		all_tuples.add(new Tuple2<>(stream_id, new_tuple));
 		return "Success";
 	}
 
@@ -483,6 +485,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 			if (env == null) {
 				env = StreamExecutionEnvironment.getExecutionEnvironment();
+				env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state"));
 				env.getConfig().disableSysoutLogging();
 				if (useRowtime) {
 					env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
@@ -499,6 +502,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
+	static long produced = 0;
 	public void DeployQueries() {
 		for (Map<String, Object> query : fetchQueries) {
 			int outputStreamId = (int) query.get("output-stream-id");
@@ -529,6 +533,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 						@Override
 						public void flatMap(Row row, Collector<Object> out) {
 							//System.out.println("Produced tuple from query");
+							++produced;
+							//System.out.println("Produced tuple " + produced);
 							if (streamIdActive.getOrDefault(outputStreamId, true)) {
 								TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
 								for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
@@ -592,7 +598,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					// This interrupt was not because of us
 					e.printStackTrace();
 				}
-				System.out.println("Stopping the execution environment");
+				System.out.println("Stopping the execution environment after having received " + cnt[0] + " tuples and produced " + produced + " tuples");
 			}
 		});
 		interrupted = false;
@@ -611,6 +617,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		threadRunningEnvironment.interrupt();
 
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state"));
+		env.setSavepointRestoreSettings(null);
 		env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
@@ -652,7 +660,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				String topicName = stream_name + "-" + otherNodeId;
 				//for (Row tuple : streamToTuples.get(stream_id)) {
 				if (++tupleCnt % 100000 == 0) {
-					System.out.println( System.nanoTime() + ": Sending tuple " + (++tupleCnt) + " to node " + otherNodeId + " with topic " + topicName);
+					System.out.println( System.nanoTime() + ": Sending tuple " + tupleCnt + " to node " + otherNodeId + " with topic " + topicName);
 				}
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, serializationSchema.serialize(row)));
 				//}
@@ -771,10 +779,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				Thread.yield();
 			}
 
-			timestamp = System.currentTimeMillis();
 			boolean repeat = true;
 			while (repeat) {
 				repeat = false;
+				timestamp = System.currentTimeMillis();
 				try {
 					CompletableFuture task = env.getMiniCluster().stopWithSavepoint(jobID, System.getenv("FLINK_BINARIES") + "/savepoints/created_savepoints", true);
 					savepointPath = task.get() + "/_metadata";
