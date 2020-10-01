@@ -437,6 +437,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String AddSchemas(List<Map<String, Object>> schemas) {
+		env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.getConfig().disableSysoutLogging();
+		if (useRowtime) {
+			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+		} else {
+			env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
+		}
+		tableEnv = StreamTableEnvironment.create(env, fsSettings);
+		tableEnv.registerFunction("DOLTOEUR", new DolToEur());
+
 		for (Map<String, Object> schema : schemas) {
 			int stream_id = (int) schema.get("stream-id");
 			final String stream_name = (String) schema.get("name");
@@ -481,19 +491,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					default:
 						throw new RuntimeException("Invalid attribute type in dataset definition");
 				}
-			}
-
-			if (env == null) {
-				env = StreamExecutionEnvironment.getExecutionEnvironment();
-				env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state"));
-				env.getConfig().disableSysoutLogging();
-				if (useRowtime) {
-					env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-				} else {
-					env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
-				}
-				tableEnv = StreamTableEnvironment.create(env, fsSettings);
-				tableEnv.registerFunction("DOLTOEUR", new DolToEur());
 			}
 
 			streamIdToTypeInfo.put(stream_id, new RowTypeInfo(typeInformations));
