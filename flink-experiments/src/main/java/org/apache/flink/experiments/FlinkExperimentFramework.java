@@ -523,33 +523,32 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
 								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1)
 								.uid("query-" + query.get("id"));
-				if (streamIdToNodeIds.containsKey(outputStreamId)) {
-					class CustomFlatMapFunction implements FlatMapFunction<Row, Object> {
-						public final int outputStreamId;
-						CustomFlatMapFunction(int outputStreamId) {
-							this.outputStreamId = outputStreamId;
-						}
-
-						@Override
-						public void flatMap(Row row, Collector<Object> out) {
-							//System.out.println("Produced tuple from query");
-							++produced;
-							//System.out.println("Produced tuple " + produced);
-							if (streamIdActive.getOrDefault(outputStreamId, true)) {
-								TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
-								for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
-									String topic = outputStreamName + "-" + otherNodeId;
-									nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
-								}
-							} else if(streamIdBuffer.getOrDefault(outputStreamId, false)) {
-								outgoingTupleBuffer.add(new Tuple2<>(outputStreamId, row));
-							}
-						}
+				class CustomFlatMapFunction implements FlatMapFunction<Row, Object> {
+					public final int outputStreamId;
+					CustomFlatMapFunction(int outputStreamId) {
+						this.outputStreamId = outputStreamId;
 					}
 
-					CustomFlatMapFunction flatMapFunction = new CustomFlatMapFunction(outputStreamId);
-					ds.flatMap(flatMapFunction);
+					@Override
+					public void flatMap(Row row, Collector<Object> out) {
+						//System.out.println("Produced tuple from query");
+						++produced;
+						//System.out.println("Produced tuple " + produced);
+						if (streamIdActive.getOrDefault(outputStreamId, true)) {
+							TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
+							for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
+								String topic = outputStreamName + "-" + otherNodeId;
+								//System.out.println("Forwarding tuples to topic " + topic);
+								nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+							}
+						} else if(streamIdBuffer.getOrDefault(outputStreamId, false)) {
+							outgoingTupleBuffer.add(new Tuple2<>(outputStreamId, row));
+						}
+					}
 				}
+
+				CustomFlatMapFunction flatMapFunction = new CustomFlatMapFunction(outputStreamId);
+				ds.flatMap(flatMapFunction);
 			}
 		}
 	}
@@ -603,6 +602,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		});
 		interrupted = false;
 		threadRunningEnvironment.start();
+		try {
+			while (env.getMiniCluster() == null || env.getMiniCluster().listJobs().get().size() < 1) {
+				Thread.sleep(1000);
+			}
+			Thread.sleep(10000);
+		} catch (InterruptedException | ExecutionException e) {
+			e.printStackTrace();
+		}
 
 		return "Success";
 	}
@@ -631,7 +638,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		tf.writeTraceToFile(this.trace_output_folder, this.getClass().getSimpleName());
 
-		while (threadRunningEnvironment.isAlive());
+		while (threadRunningEnvironment.isAlive()) {
+                        threadRunningEnvironment.interrupt();
+			try {
+			        Thread.sleep(1000);
+			} catch (InterruptedException e) {
+			        e.printStackTrace();
+			}
+		}
 		return "Success";
 	}
 
@@ -728,7 +742,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			long cur_time = System.currentTimeMillis();
 			time_diff = cur_time - Kafka09Fetcher.timeLastRecvdTuple;
-			System.out.println("RetEndOfStream, time_diff: " + time_diff + ", cur-time: " + cur_time + ", timeLastRecvdTuple: " + Kafka09Fetcher.timeLastRecvdTuple);
+			System.out.println("RetEndOfStream, time_diff: " + time_diff + ", cur-time: " + cur_time + ", timeLastRecvdTuple: " + Kafka09Fetcher.timeLastRecvdTuple + ", received " + cnt[0] + " tuples");
 		} while (time_diff < milliseconds || Kafka09Fetcher.timeLastRecvdTuple == 0);
 		return Long.toString(time_diff);
 	}
