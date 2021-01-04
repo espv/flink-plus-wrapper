@@ -493,6 +493,7 @@ public class SavepointV2Serializer implements SavepointSerializer<SavepointV2> {
 						new OperatorStateHandle.StateMetaInfo(offsets, mode);
 				offsetsMap.put(key, metaInfo);
 			}
+			// This is where we need to modify the file name
 			StreamStateHandle stateHandle = deserializeStreamStateHandle(dis);
 			return new OperatorStreamStateHandle(offsetsMap, stateHandle);
 		} else {
@@ -534,6 +535,10 @@ public class SavepointV2Serializer implements SavepointSerializer<SavepointV2> {
 		} else if (FILE_STREAM_STATE_HANDLE == type) {
 			long size = dis.readLong();
 			String pathString = dis.readUTF();
+			String[] pathArray = pathString.split("/");
+			pathString = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + pathArray[pathArray.length-2] + "/" + pathArray[pathArray.length-1];
+			// TODO: Modify pathString so that we get the path-name but replace the prefixed path with the FLINK_BINARIES path of this machine, AND that the path points to received_savepoints and not created_savepoints.
+			// TODO: The easiest for now is to replace created_savepoints with received_savepoints, but that's not portable. However, neither is the suggestion above. We'd need to use a different set of methods.
 			return new FileStateHandle(new Path(pathString), size);
 		} else if (BYTE_STREAM_STATE_HANDLE == type) {
 			String handleName = dis.readUTF();

@@ -1,10 +1,13 @@
 package org.apache.flink.experiments;
 
 import no.uio.ifi.ExperimentAPI;
-import no.uio.ifi.SpeComm;
+import no.uio.ifi.SpeTaskHandler;
 import no.uio.ifi.SpeSpecificAPI;
 import no.uio.ifi.TracingFramework;
+import no.uio.ifi.zip.UnzipFile;
+import no.uio.ifi.zip.ZipDirectory;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.math3.stat.regression.SimpleRegression;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -12,6 +15,7 @@ import org.apache.flink.api.common.serialization.TypeInformationSerializationSch
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.client.program.MiniClusterClient;
 import org.apache.flink.runtime.jobgraph.JobStatus;
@@ -47,6 +51,9 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 
+import static com.google.common.primitives.Longs.min;
+import static java.lang.Math.abs;
+
 @SuppressWarnings("unchecked")
 public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, Serializable {
 	private static final Logger LOG = LoggerFactory.getLogger(FlinkExperimentFramework.class);
@@ -77,13 +84,21 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	Map<Integer, List<Map<String, Object>>> datasetIdToTuples = new HashMap<>();
 	Map<Integer, Boolean> printDataStream = new HashMap<>();
 	Map<Integer, Map<String, Object>> queryIdToMapQuery = new HashMap<>();
+	Map<Integer, Integer> nodeIdToTuplesPerSecondLimit = new HashMap<>();
+	Map<Integer, Long> nodeIdToTupleInterval = new HashMap<>();
+	Map<Integer, List<Long>> nodeIdToTimestampsTuplesSent = new HashMap<>();
+	final Map<Integer, Map<Long, Long>> nodeIdToMillisecondToForwarded = new HashMap<>();
+	Map<Integer, SimpleRegression> nodeIdToRegressionModels = new HashMap<>();
+	Map<Integer, List<Long>> nodeIdToTimestampsTuplesDropped = new HashMap<>();
+	Map<Integer, List<Tuple3<Long, Double, Long>>> send_schedule = new HashMap<>();
 	static TracingFramework tf = new TracingFramework();
 	Producer<String, byte[]> producer;
 	Map<Integer, SourceFunction<Row>> envSourceFunctions = new HashMap<>();
 	List<FlinkKafkaConsumer010<Row>> consumers = new ArrayList<>();
 	long timestampForKafkaConsumer = 0;
+	long millisecond100Offset = 0;
 
-	SpeComm speComm;
+	SpeTaskHandler speComm;
 
 	static List<Tuple2<Integer, Row>> incomingTupleBuffer = new ArrayList<>();
 	static List<Tuple2<Integer, Row>> outgoingTupleBuffer = new ArrayList<>();
@@ -115,7 +130,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
 	}
 
-	public void setSpeComm(SpeComm speComm) {
+	public void setSpeTaskHandler(SpeTaskHandler speComm) {
 		this.speComm = speComm;
 	}
 
@@ -136,6 +151,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String SetIntervalBetweenTuples(int interval) {
 		interval_wait = interval;
+		return "Success";
+	}
+
+	@Override
+	public String SetTuplesPerSecondLimit(int tuples_per_second, List<Integer> node_list) {
+		long ns_between_tuples = (int) ((1.0/tuples_per_second) * 1000000000);
+		for (int node_id : node_list) {
+			this.nodeIdToTuplesPerSecondLimit.put(node_id, tuples_per_second);
+			this.nodeIdToTupleInterval.put(node_id, ns_between_tuples);
+			System.out.println("Node tuple interval: " + ns_between_tuples);
+		}
 		return "Success";
 	}
 
@@ -195,6 +221,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				}
 			}*/
 		}
+		for (int nodeId : nodeIds) {
+			this.nodeIdToTimestampsTuplesSent.put(nodeId, new ArrayList<>());
+			this.nodeIdToMillisecondToForwarded.put(nodeId, new HashMap<>());
+			this.nodeIdToTimestampsTuplesDropped.put(nodeId, new ArrayList<>());
+			this.nodeIdToRegressionModels.put(nodeId, new SimpleRegression());
+		}
 		return "Success";
 	}
 
@@ -245,7 +277,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				// We only log once every maximum one second, to avoid too many tracepoints
 				if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
 					LOG.info("Received tuple {}", cnt[0]);
-					System.out.println("Received tuple " + cnt[0]);
+					System.out.println("Received tuple " + cnt[0] + ": " + value);
 					timeLastRecvdTuple = newTime;
 				}
 			}
@@ -361,50 +393,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				CastTuplesCorrectTypes(ordered_tuples.get(stream_id), schema);
 			}
 
-			// Sort the raw_tuples by their order
-			/*raw_tuples.sort((lhs, rhs) -> {
-				int lhs_order = (int) lhs.get("_order");
-				int rhs_order = (int) rhs.get("_order");
-				return Integer.compare(lhs_order, rhs_order);
-			});*/
-
 			datasetIdToTuples.put(ds_id, raw_tuples);
 			tuples = raw_tuples;
 		}
-		/*double prevTimestamp = 0;
-		//System.out.println("Ready to transmit tuples");
-		long prevTime = System.nanoTime();
-		boolean realism = (boolean) ds.getOrDefault("realism", false) && schema.containsKey("rowtime-column");
-		for (Map<String, Object> tuple : tuples) {
-			AddTuples(tuple, 1);
-
-			if (realism) {
-				Map<String, Object> rowtime_column = (Map<String, Object>) schema.get("rowtime-column");
-				double timestamp = 0;
-				for (Map<String, Object> attribute : (List<Map<String, Object>>) tuple.get("attributes")) {
-					if (attribute.get("name").equals(rowtime_column.get("column"))) {
-						int nanoseconds_per_tick = (int) rowtime_column.get("nanoseconds-per-tick");
-						timestamp = (double) attribute.get("value") * nanoseconds_per_tick;
-						if (prevTimestamp == 0) {
-							prevTimestamp = timestamp;
-						}
-						break;
-					}
-				}
-				double time_diff_tuple = timestamp - prevTimestamp;
-				long time_diff_real = System.nanoTime() - prevTime;
-				while (time_diff_real < time_diff_tuple) {
-					time_diff_real = System.nanoTime() - prevTime;
-				}
-
-				prevTimestamp = timestamp;
-				prevTime = System.nanoTime();
-			}
-		}
-
-		if (!realism) {
-			ProcessTuples(tuples.size());
-		}*/
 
 		for (int i = 0; i < iterations; i++) {
 			for (Map<String, Object> tuple : tuples) {
@@ -412,6 +403,245 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 		}
 		ProcessTuples(iterations * tuples.size());
+		return "Success";
+	}
+
+	public void AddToSendSchedule(int node_id, long downtime, Double tuples_per_second, long current_on, int step) {
+		long next_start = System.currentTimeMillis() + downtime;
+		Long next_stop = next_start + current_on + step;
+		Tuple3<Long, Double, Long> next_schedule = new Tuple3<>(next_start, tuples_per_second, next_stop);
+		send_schedule.put(node_id, new ArrayList<>());
+		send_schedule.get(node_id).add(next_schedule);
+	}
+
+	/**
+	 * Method sends tuples with tuples_per_second
+	 * @param desired_tuples_per_second
+	 * @param downtime
+	 * @param min
+	 * @param max
+	 * @param step
+	 */
+	public void SendTuplesVariableOnOff(int desired_tuples_per_second, int downtime, int min, int max, int step) {
+		long desired_ns_between_tuples = (int) ((1.0/desired_tuples_per_second) * 1000000000);
+		//System.out.println("SendTuplesVariableOnOff: Node " + to_node + ", desired ns tuple interval: " + desired_ns_between_tuples + ", actual ns tuple interval: " + this.nodeIdToTupleInterval.get(to_node));
+		//long actual_ns_between_tuples = min(desired_ns_between_tuples, this.nodeIdToTupleInterval.get(to_node));
+		Random r = new Random();
+
+		if (all_tuples.isEmpty()) {
+			System.out.println("No tuples to process");
+		}
+		long last_sent = 0;
+
+		Map<Integer, Double> node_to_actual_tuples_per_second = new HashMap<>();
+		Map<Integer, Double> node_to_drop_probability = new HashMap<>();
+
+		for (int to_node : this.nodeIdToTuplesPerSecondLimit.keySet()) {
+			double max_tuples_per_second = this.nodeIdToTuplesPerSecondLimit.get(to_node);
+			double actual_tuples_per_second = Math.min(desired_tuples_per_second, max_tuples_per_second);
+
+			double drop_probability = 100 * (1 - actual_tuples_per_second/desired_tuples_per_second);
+			node_to_actual_tuples_per_second.put(to_node, actual_tuples_per_second);
+			node_to_drop_probability.put(to_node, drop_probability);
+		}
+
+		int current_on = min;
+		for (int to_node : node_to_actual_tuples_per_second.keySet()) {
+			AddToSendSchedule(to_node, downtime, node_to_actual_tuples_per_second.get(to_node), current_on, step);
+		}
+
+		// TODO: tuples_per_second is actually desired tuples per second, and might be higher than what
+		// nodeIdToTuplesPerSecondLimit allows
+		// Therefore, we must change tuples_per_second if it's too high
+		// The problem is that we don't talk about node IDs before we send the tuples, which happens in the
+		// next step
+		// What we might need is for the next step to wait a certain amount of time after having sent a tuple,
+		// so as to make up for the tuple rate.
+		// Problem is that we require a lot of assumptions that way
+		for (; current_on < max; current_on += step) {
+			double desired_total_packets = (desired_tuples_per_second * (current_on/1000.0));
+
+			/*System.out.println("Sending " + actual_total_packets + " over " + current_on + " milliseconds");
+			if (actual_tuples_per_second == desired_tuples_per_second) {
+				System.out.println("We are hitting the target of how many tuples we want to forward");
+			} else {
+				System.out.println("Actual tuples this round is " + actual_total_packets + ", versus desired tuples is " + desired_total_packets);
+				System.out.println("We attempt to send " + desired_total_packets + ", but have a probability of " + drop_probability + "% of dropping tuples");
+			}*/
+
+			// Now, we need to send total_packets to each node that will be a recipient
+			// Problem is, we don't know who will be the recipient until we look at the stream IDs
+			// I don't want thread synchronization, because that messes things up royally
+			// I should really add to which node I want to send the dataset
+			//
+			for (int curPktsPublished = 1; curPktsPublished <= desired_total_packets; curPktsPublished++) {
+				Tuple2<Integer, Row> tuple = all_tuples.get(curPktsPublished % all_tuples.size());
+				//Tuple3<byte[], Attribute.Type[], String> t = allPackets.get(curPktsPublished % allPackets.size());
+				++pktsPublished;
+				if (pktsPublished % 10000 == 0) {
+					System.out.println("SendTuples: " + pktsPublished + " tuples");
+				}
+				long current_time = System.nanoTime();
+				if (desired_ns_between_tuples != 0) {
+					long time_diff = current_time - last_sent;
+					while (time_diff < desired_ns_between_tuples) {
+						current_time = System.nanoTime();
+						time_diff = current_time - last_sent;
+					}
+				}
+
+				//System.out.println("random_number: " + random_number + ", drop_probability: " + drop_probability + ", dropped: " + tuple_is_dropped);
+
+				// TODO: Replace to_node here
+				/*long current_time_100ms = System.currentTimeMillis() / 100;
+				if (millisecond100Offset == 0) {
+					millisecond100Offset = current_time_100ms;
+					this.nodeIdToMillisecondToForwarded.put(to_node, new HashMap<>());
+				}
+				long current_time_100ms_norm = current_time_100ms - millisecond100Offset;
+
+				synchronized (this.nodeIdToMillisecondToForwarded) {
+					if (current_time_100ms_norm > 10000 || current_time_100ms_norm < 0) {
+						System.out.println("current_time_100ms_norm " + current_time_100ms_norm + " is weird");
+					}
+					this.nodeIdToMillisecondToForwarded.get(to_node).computeIfAbsent(current_time_100ms_norm, k -> 0L);
+					this.nodeIdToMillisecondToForwarded.get(to_node).put(current_time_100ms_norm, this.nodeIdToMillisecondToForwarded.get(to_node).get(current_time_100ms_norm) + 1);
+				}
+				if (tuple_is_dropped) {
+					synchronized (this.nodeIdToTimestampsTuplesDropped.get(to_node)) {
+						this.nodeIdToTimestampsTuplesDropped.get(to_node).add(0, current_time);
+					}
+					continue;
+				} else {
+					synchronized (this.nodeIdToTimestampsTuplesSent.get(to_node)) {
+						this.nodeIdToTimestampsTuplesSent.get(to_node).add(0, current_time);
+					}
+				}*/
+
+				int stream_id = tuple.f0;
+				Row row = tuple.f1;
+				TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
+				String stream_name = (String) allSchemas.get(stream_id).get("name");
+				for (int to_node : streamIdToNodeIds.get(stream_id)) {
+					String topicName = stream_name + "-" + to_node;
+					if (++tupleCnt % 100000 == 0) {
+						System.out.println( System.nanoTime() + ": Sending tuple " + tupleCnt + " to node " + to_node + " with topic " + topicName);
+					}
+					int random_number = abs(r.nextInt() % 101);
+					double drop_probability = node_to_drop_probability.get(to_node);
+					boolean tuple_is_dropped = random_number <= drop_probability;
+					if (tuple_is_dropped) {
+						synchronized (this.nodeIdToTimestampsTuplesDropped.get(to_node)) {
+							this.nodeIdToTimestampsTuplesDropped.get(to_node).add(0, current_time);
+						}
+						continue;
+					} else {
+						synchronized (this.nodeIdToTimestampsTuplesSent.get(to_node)) {
+							this.nodeIdToTimestampsTuplesSent.get(to_node).add(0, current_time);
+						}
+					}
+					nodeIdToKafkaProducer.get(to_node).send(new ProducerRecord<>(topicName, serializationSchema.serialize(row)));
+				}
+				last_sent = System.nanoTime();
+			}
+			// Do we have another iteration?
+			for (int to_node : node_to_actual_tuples_per_second.keySet()) {
+				AddToSendSchedule(to_node, downtime, node_to_actual_tuples_per_second.get(to_node), current_on, step);
+			}
+
+			if (downtime > 0) {
+				System.out.println("Stopping for " + downtime + " milliseconds");
+				try {
+					Thread.sleep(downtime);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+			}
+		}
+		pktsPublished = 0;
+	}
+
+	@Override
+	public String SendDsAsVariableOnOffStream(Map<String, Object> ds, int desired_tuples_per_second, int downtime, int min, int max, int step) {
+		//System.out.println("Processing dataset");
+		int ds_id = (int) ds.get("id");
+		List<Map<String, Object>> tuples = datasetIdToTuples.get(ds_id);
+		if (tuples == null) {
+			System.out.println("Before reading the dataset");
+			Map<String, Object> map = GetMapFromYaml(ds);
+			System.out.println("After reading the dataset");
+			List<Map<String, Object>> raw_tuples = (List<Map<String, Object>>) map.get("cepevents");
+			Map<Integer, List<Map<String, Object>>> ordered_tuples = new HashMap<>();
+			//int i = 0;
+			// Add order to tuples and place them in ordered_tuples
+			for (Map<String, Object> tuple : raw_tuples) {
+				//tuple.put("_order", i++);
+				int tuple_stream_id = (int) tuple.get("stream-id");
+				if (ordered_tuples.get(tuple_stream_id) == null) {
+					ordered_tuples.put(tuple_stream_id, new ArrayList<>());
+				}
+				ordered_tuples.get(tuple_stream_id).add(tuple);
+			}
+
+			// Fix the type of the tuples in ordered_tuples
+			for (int stream_id : ordered_tuples.keySet()) {
+				Map<String, Object> schema = allSchemas.get(stream_id);
+				CastTuplesCorrectTypes(ordered_tuples.get(stream_id), schema);
+			}
+
+			datasetIdToTuples.put(ds_id, raw_tuples);
+			tuples = raw_tuples;
+		}
+
+		for (Map<String, Object> tuple : tuples) {
+			AddTuples(tuple, 1);
+		}
+
+		new Thread(() -> SendTuplesVariableOnOff(desired_tuples_per_second, downtime, min, max, step)).start();
+		boolean cont = true;
+		while (cont);
+		return "Success";
+	}
+
+	@Override
+	public String SendDsAsConstantStream(Map<String, Object> ds, int desired_tuples_per_second) {
+		//System.out.println("Processing dataset");
+		int ds_id = (int) ds.get("id");
+		List<Map<String, Object>> tuples = datasetIdToTuples.get(ds_id);
+		if (tuples == null) {
+			System.out.println("Before reading the dataset");
+			Map<String, Object> map = GetMapFromYaml(ds);
+			System.out.println("After reading the dataset");
+			List<Map<String, Object>> raw_tuples = (List<Map<String, Object>>) map.get("cepevents");
+			Map<Integer, List<Map<String, Object>>> ordered_tuples = new HashMap<>();
+			//int i = 0;
+			// Add order to tuples and place them in ordered_tuples
+			for (Map<String, Object> tuple : raw_tuples) {
+				//tuple.put("_order", i++);
+				int tuple_stream_id = (int) tuple.get("stream-id");
+				if (ordered_tuples.get(tuple_stream_id) == null) {
+					ordered_tuples.put(tuple_stream_id, new ArrayList<>());
+				}
+				ordered_tuples.get(tuple_stream_id).add(tuple);
+			}
+
+			// Fix the type of the tuples in ordered_tuples
+			for (int stream_id : ordered_tuples.keySet()) {
+				Map<String, Object> schema = allSchemas.get(stream_id);
+				CastTuplesCorrectTypes(ordered_tuples.get(stream_id), schema);
+			}
+
+			datasetIdToTuples.put(ds_id, raw_tuples);
+			tuples = raw_tuples;
+		}
+
+		for (Map<String, Object> tuple : tuples) {
+			AddTuples(tuple, 1);
+		}
+
+		new Thread(() -> SendTuplesVariableOnOff(desired_tuples_per_second, 0, Integer.MAX_VALUE-1, Integer.MAX_VALUE, 0)).start();
+		boolean cont = true;
+		while (cont);
 		return "Success";
 	}
 
@@ -423,14 +653,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Map<String, Object> attribute = attributes.get(i);
 			new_tuple.setField(i, attribute.get("value"));
 		}
-		/*int stream_id = (int) tuple.get("stream-id");
-		if (!streamToTuples.containsKey(stream_id)) {
-			streamToTuples.put(stream_id, new ArrayList<>());
-		}
 
-		for (int i = 0; i < quantity; i++) {
-			streamToTuples.get(stream_id).add(new_tuple);
-		}*/
 		all_tuples.add(new Tuple2<>(stream_id, new_tuple));
 		return "Success";
 	}
@@ -511,7 +734,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			Table result = tableEnv.sqlQuery(sql_query);
 			if (!(boolean) output_schema.getOrDefault("registered", false) &&
-				(boolean) output_schema.getOrDefault("intermediary-stream", false)) {
+					(boolean) output_schema.getOrDefault("intermediary-stream", false)) {
 				output_schema.put("registered", true);
 				tableEnv.registerTable(this.streamIdToName.get(outputStreamId), result);
 			} else {
@@ -580,6 +803,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			//	"Stop it with stopRuntimeEnv before running it again.");
 			return "Environment already running";
 		}
+		cnt[0] = 0;
 		DeployQueries();
 		threadRunningEnvironment = new Thread(() -> {
 			//System.out.println("Starting environment");
@@ -662,7 +886,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	int tupleCnt = 0;
 	public String ProcessTuples(int number_tuples) {
 		System.out.println("Processing " + number_tuples);
-		for (Tuple2<Integer, Row> tuple : all_tuples) {
+		for (int i = 0; i < all_tuples.size(); i++) {
+			Tuple2<Integer, Row> tuple = all_tuples.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
@@ -796,7 +1021,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				timestamp = System.currentTimeMillis();
 				try {
 					CompletableFuture task = env.getMiniCluster().stopWithSavepoint(jobID, System.getenv("FLINK_BINARIES") + "/savepoints/created_savepoints", true);
-					savepointPath = task.get() + "/_metadata";
+					savepointPath = ((String) task.get()).split(":")[1];
 				} catch (ExecutionException e) {
 					repeat = true;
 				}
@@ -805,16 +1030,33 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			e.printStackTrace();
 			System.exit(31);
 		}
-		savepointPath = savepointPath.split("file:")[1];
+
+		File savepointPathFile = new File(savepointPath);
+		while (!savepointPathFile.exists()) {
+			try {
+				Thread.sleep(1);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+		}
+
+		// TODO: zip savepointPath
+		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		try {
+			ZipDirectory.zipDirectory(savepointPath, zipPath);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
 		// Read savepointPath and send it as a byte array
 		// LoadQueryState() will write the array to file and restore it
 		byte[] snapshot = null;
 		System.out.println("Moving query state from savepoint " + savepointPath);
 		String[] path = savepointPath.split("/");
-		String parentFolderName = path[path.length-2];
-		File file = new File(savepointPath);
+		String parentFolderName = path[path.length-1];
+		File file = new File(zipPath);
 		while (!file.exists()) {
-			System.out.println("Waiting for savepoint file " + savepointPath + " to be created");
+			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
 			try {
 				System.out.println("Waiting for savepoint file (canonical) " + file.getCanonicalPath() + " to be created");
 			} catch (IOException e) {
@@ -827,6 +1069,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
+
 		Map<String, Object> task = new HashMap<>();
 		task.put("task", "loadQueryState");
 		List<Object> task_args = new ArrayList<>();
@@ -839,17 +1082,38 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task_args.add(timestamp);
 		task.put("arguments", task_args);
 		task.put("node", Collections.singletonList(new_host));
-		speComm.speCoordinatorComm.SendToSpe(task);
+		speComm.speNodeComm.SendToSpe(task);
 		return "Success";
 	}
 
 	public String LoadQueryState(byte[] snapshot, Map<String, Object> map_query, String savepointName, Map<Integer, List<Integer>> stream_ids_to_source_node_ids, long timestamp) {
 		int query_id = (int) map_query.get("id");
+		System.out.println("Received query state with " + snapshot.length + " bytes");
 		queryIdToStreamIdToNodeIds.put(query_id, stream_ids_to_source_node_ids);
 		// Write snapshot to savepoints/received_savepoints/savepointName
-		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName + "/_metadata";
+		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName;
+		String zippedSavepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
+		File zip = new File(zippedSavepointPath);
+		zip.delete();
 		try {
-			FileUtils.writeByteArrayToFile(new File(savepointPath), snapshot);
+			zip.createNewFile();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		try {
+			FileUtils.writeByteArrayToFile(zip, snapshot);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		while (!zip.exists());
+
+		String[] savepointParentPathArray = savepointPath.split("/");
+		savepointParentPathArray[savepointParentPathArray.length-1] = "";
+		String savepointParentPath = String.join("/", savepointParentPathArray);
+		try {
+			UnzipFile.unzip(zippedSavepointPath, savepointParentPath);
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
@@ -911,7 +1175,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	@Override
-	public String StopStream(List<Integer> stream_id_list) {
+	public String StopStream(List<Integer> stream_id_list, int migration_coordinator_node_id) {
 		for (int stream_id : stream_id_list) {
 			streamIdActive.put(stream_id, false);
 		}
@@ -923,21 +1187,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (int stream_id : stream_id_list) {
 			streamIdBuffer.put(stream_id, true);
 		}
-		return "Success";
-	}
-
-	@Override
-	public String BufferAndStopStream(List<Integer> stream_id_list) {
-		BufferStream(stream_id_list);
-		StopStream(stream_id_list);
-		return "Success";
-	}
-
-	@Override
-	public String BufferStopAndRelayStream(List<Integer> stream_id_list, List<Integer> old_host_list, List<Integer> new_host_list) {
-		BufferStream(stream_id_list);
-		StopStream(stream_id_list);
-		RelayStream(stream_id_list, old_host_list, new_host_list);
 		return "Success";
 	}
 
@@ -1004,6 +1253,82 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	@Override
+	public Map<String, Object> CollectMetrics(long metrics_window_ms) {
+		System.out.println("metrics window in ms: " + metrics_window_ms);
+		long metrics_window_ns = metrics_window_ms * 1000000;
+		double metrics_window_s = metrics_window_ms / 1000.0;
+		long current_time = System.nanoTime();
+		long current_time_ms = System.currentTimeMillis();
+		Map<String, Object> metrics = new HashMap<>();
+		Map<Integer, SimpleRegression> nodeIdToRegressionModels = new HashMap<>();
+		metrics.put("node", nodeId);
+		Map<Integer, Object> sent_metrics = new HashMap<>();
+		Map<Integer, Object> dropped_metrics = new HashMap<>();
+		metrics.put("actual-sent-packets-per-second", sent_metrics);
+		metrics.put("dropped-packets-per-second", dropped_metrics);
+		metrics.put("forwarded-tuples-regression-models", nodeIdToRegressionModels);
+
+		Set<Integer> allNextHopNodes = new HashSet<>();
+		for (List<Integer> node_ids : streamIdToNodeIds.values()) {
+			allNextHopNodes.addAll(node_ids);
+		}
+		long cutoff_time = current_time - metrics_window_ns;
+		long current_time_100ms = (current_time_ms / 100) - this.millisecond100Offset;
+		long cutoff_time_100ms = (current_time_ms - metrics_window_ms) / 100 - this.millisecond100Offset;
+		for (int next_hop : allNextHopNodes) {
+			int sent_pps;
+			int sent_cnt = 0;
+			synchronized (this.nodeIdToTimestampsTuplesSent.get(next_hop)) {
+				for (long timestampSent : this.nodeIdToTimestampsTuplesSent.get(next_hop)) {
+					if (timestampSent < cutoff_time) {
+						break;
+					}
+					++sent_cnt;
+				}
+			}
+			sent_pps = (int) (sent_cnt / metrics_window_s);
+			sent_metrics.put(next_hop, Integer.toString(sent_pps));
+			int dropped_pps;
+			int dropped_cnt = 0;
+
+			synchronized (this.nodeIdToTimestampsTuplesDropped.get(next_hop)) {
+				for (long timestampDropped : this.nodeIdToTimestampsTuplesDropped.get(next_hop)) {
+					if (timestampDropped < cutoff_time) {
+						break;
+					}
+					++dropped_cnt;
+				}
+			}
+			dropped_pps = (int) (dropped_cnt / metrics_window_s);
+			dropped_metrics.put(next_hop, Integer.toString(dropped_pps));
+			this.nodeIdToTimestampsTuplesSent.get(next_hop);
+			this.nodeIdToTimestampsTuplesDropped.get(next_hop);
+		}
+
+		for (int node_id : this.nodeIdToMillisecondToForwarded.keySet()) {
+			SimpleRegression regression = new SimpleRegression();
+			Map<Long, Long> millisecondsToForwarded = this.nodeIdToMillisecondToForwarded.get(node_id);
+			for (long i = 0; i <= current_time_100ms; i++) {
+				synchronized (this.nodeIdToMillisecondToForwarded.get(node_id)) {
+					this.nodeIdToMillisecondToForwarded.get(node_id).computeIfAbsent(i, k -> 0L);
+				}
+			}
+			for (long ms : millisecondsToForwarded.keySet()) {
+				if (ms < cutoff_time_100ms) {
+					continue;
+				}
+				long numberForwarded = millisecondsToForwarded.get(ms);
+				System.out.println("Number forwarded at " + ms + ": " + numberForwarded + ", cutoff_time_100ms: " + cutoff_time_100ms);
+				regression.addData(ms, numberForwarded);
+			}
+			System.out.println("Regression slope for Node " + node_id + ": " + regression.getSlope());
+			nodeIdToRegressionModels.put(node_id, regression);
+		}
+
+		return metrics;
+	}
+
+	@Override
 	public void LockExecution() {
 
 	}
@@ -1027,11 +1352,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		boolean continue_running = true;
 		while (continue_running) {
 			FlinkExperimentFramework experimentAPI = new FlinkExperimentFramework();
-			SpeComm speComm = new SpeComm(args, experimentAPI, experimentAPI);
-			experimentAPI.setSpeComm(speComm);
+			SpeTaskHandler speComm = new SpeTaskHandler(args, experimentAPI, experimentAPI);
+			experimentAPI.setSpeTaskHandler(speComm);
 			experimentAPI.setNodeId(speComm.GetNodeId());
 			experimentAPI.SetTraceOutputFolder(speComm.GetTraceOutputFolder());
-			speComm.AcceptTasks();
+			//speComm.AcceptTasks();
+			while (true);
 		}
 	}
 
