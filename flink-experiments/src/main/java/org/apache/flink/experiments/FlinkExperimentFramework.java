@@ -43,6 +43,8 @@ import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.*;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -118,6 +120,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	Map<Integer, Properties> nodeIdToProperties = new HashMap<>();
 	List<Tuple2<Integer, Row>> all_tuples = new ArrayList<>();
 
+	ServerSocket state_transfer_server = null;
+
 	FlinkExperimentFramework() {
 		props = new Properties();
 		props.put("bootstrap.servers", "localhost:9092");
@@ -128,6 +132,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
+	}
+
+	public void setupStateTransferServer(int state_transfer_port) {
+		try {
+			state_transfer_server = new ServerSocket(state_transfer_port);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
 	}
 
 	public void setSpeTaskHandler(SpeTaskHandler speComm) {
@@ -182,9 +194,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 			if (nodeId != FlinkExperimentFramework.nodeId) {
 				// Establish coordinator connection with node
-				int port = (int) newNodeIdToIpAndPort.get(nodeId).get("spe-coordinator-port");
+				int spe_coordinator_port = (int) newNodeIdToIpAndPort.get(nodeId).get("spe-coordinator-port");
 				try {
-					this.speComm.ConnectToSpeCoordinator(nodeId, ip, port);
+					this.speComm.ConnectToSpeCoordinator(nodeId, ip, spe_coordinator_port);
 				} catch (Exception e) {
 					e.printStackTrace();
 					System.err.println("Failed to connect to Node " + nodeId + "'s SPE coordinator");
@@ -1006,6 +1018,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		while (!env.getMiniCluster().isRunning()) {
 
 		}
+		long ms_start = System.currentTimeMillis();
 		long timestamp = 0;
 		try {
 			while (env.getMiniCluster().listJobs().get().size() == 0) {
@@ -1071,10 +1084,38 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			e.printStackTrace();
 		}
 
+		byte[] finalSnapshot = snapshot;
+		new Thread(() -> {
+			// Begin to set up state transfer connection
+			String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
+			int new_host_state_transfer_port = (int) this.nodeIdToIpAndPort.get(new_host).get("state-transfer-port");
+			Socket clientSocket = null;
+			try {
+				clientSocket = new Socket(ip, new_host_state_transfer_port);
+			} catch (IOException e) {
+				e.printStackTrace();
+				System.exit(100);
+			}
+			OutputStream out = null;
+			try {
+				out = clientSocket.getOutputStream();
+			} catch (IOException e) {
+				e.printStackTrace();
+				System.exit(101);
+			}
+			try {
+				out.write(finalSnapshot);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			// Now we have sent the snapshot to the new host
+			// The new host will receive in the task how many bytes it must receive on its socket
+		}).start();
+
 		Map<String, Object> task = new HashMap<>();
 		task.put("task", "loadQueryState");
 		List<Object> task_args = new ArrayList<>();
-		task_args.add(snapshot);
+		task_args.add(snapshot.length);
 		Map<String, Object> map_query = queryIdToMapQuery.get(query_id);
 		task_args.add(map_query);
 		task_args.add(parentFolderName);
@@ -1083,13 +1124,19 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task_args.add(timestamp);
 		task.put("arguments", task_args);
 		task.put("node", Collections.singletonList(new_host));
+		long ms_stop1 = System.currentTimeMillis();
+		System.out.println("Time at sending state: " + System.currentTimeMillis());
 		speComm.speNodeComm.SendToSpe(task);
+		long ms_stop2 = System.currentTimeMillis();
+		System.out.println("Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
 		return "Success";
 	}
 
-	public String LoadQueryState(byte[] snapshot, Map<String, Object> map_query, String savepointName, Map<Integer, List<Integer>> stream_ids_to_source_node_ids, long timestamp) {
+	public String LoadQueryState(int snapshot_length, Map<String, Object> map_query, String savepointName, Map<Integer, List<Integer>> stream_ids_to_source_node_ids, long timestamp) {
+		System.out.println("Time at receiving state: " + System.currentTimeMillis());
+		System.out.println("Received query state with " + snapshot_length + " bytes");
+		long ms_start = System.currentTimeMillis();
 		int query_id = (int) map_query.get("id");
-		System.out.println("Received query state with " + snapshot.length + " bytes");
 		queryIdToStreamIdToNodeIds.put(query_id, stream_ids_to_source_node_ids);
 		// Write snapshot to savepoints/received_savepoints/savepointName
 		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName;
@@ -1100,6 +1147,22 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			zip.createNewFile();
 		} catch (IOException e) {
 			e.printStackTrace();
+		}
+
+		Socket client_socket = null;
+		try {
+			client_socket = state_transfer_server.accept();
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(102);
+		}
+
+		byte[] snapshot = new byte[snapshot_length];
+		try {
+			new DataInputStream(client_socket.getInputStream()).readFully(snapshot);
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(103);
 		}
 
 		try {
@@ -1128,7 +1191,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.setSavepointRestoreSettings(savepointRestoreSettings);
 		StartRuntimeEnv();
 
+		long ms_stop1 = System.currentTimeMillis();
 		ResumeStream(new ArrayList<>(stream_ids_to_source_node_ids.keySet()));
+		long ms_stop2 = System.currentTimeMillis();
+		System.out.println("Loading the state took " + (ms_stop1 - ms_start) + " ms, and in addition to resuming the streams took " + (ms_stop2 - ms_start) + " ms");
 		return "Success";
 	}
 
@@ -1357,6 +1423,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			experimentAPI.setSpeTaskHandler(speComm);
 			experimentAPI.setNodeId(speComm.GetNodeId());
 			experimentAPI.SetTraceOutputFolder(speComm.GetTraceOutputFolder());
+			int state_transfer_port = speComm.GetStateTransferPort();
+			if (state_transfer_port != -1) {
+				experimentAPI.setupStateTransferServer(state_transfer_port);
+			}
 			//speComm.AcceptTasks();
 			while (true);
 		}
@@ -1368,12 +1438,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		switch (cmd) {
 			case "loadQueryState": {
 				List<Object> args = (List<Object>) task.get("arguments");
-				byte[] snapshot = (byte[]) args.get(0);
+				int snapshot_length = (int) args.get(0);
 				Map<String, Object> query = (Map<String, Object>) args.get(1);
 				String savepointFileName = (String) args.get(2);
 				Map<Integer, List<Integer>> stream_ids_to_node_ids = (Map<Integer, List<Integer>>) args.get(3);
 				long timestamp = (long) args.get(4);
-				LoadQueryState(snapshot, query, savepointFileName, stream_ids_to_node_ids, timestamp);
+				LoadQueryState(snapshot_length, query, savepointFileName, stream_ids_to_node_ids, timestamp);
 				break;
 			} default:
 				throw new RuntimeException("Invalid task from mediator: " + cmd);
