@@ -132,6 +132,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
+		timestampForKafkaConsumer = System.currentTimeMillis();
 	}
 
 	public void setupStateTransferServer(int state_transfer_port) {
@@ -797,18 +798,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
-	MiniCluster cluster;
-	MiniClusterClient client;
 	JobID jobID;
 	String savepointPath;
 	SavepointRestoreSettings savepointRestoreSettings = null;
-	@Override
-	public String StartRuntimeEnv() {
-		/*if (interrupted) {
-			System.out.println("Still waiting for the runtime environment to interrupt!");
-			return "Error, runtime environment has not exited from its previous execution";
-		}*/
 
+	public String DoStartRuntimeEnv() {
 		if (threadRunningEnvironment != null && threadRunningEnvironment.isAlive()) {
 			//throw new RuntimeException("The execution environment is already running. " +
 			//	                   	   "Stop it with stopRuntimeEnv before running it again.");
@@ -836,15 +830,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		});
 		interrupted = false;
 		threadRunningEnvironment.start();
-		try {
-			while (env.getMiniCluster() == null || env.getMiniCluster().listJobs().get().size() < 1) {
-				Thread.sleep(1000);
-			}
-			Thread.sleep(10000);
-		} catch (InterruptedException | ExecutionException e) {
-			e.printStackTrace();
-		}
+		return "Success";
+	}
 
+	@Override
+	public String StartRuntimeEnv() {
+		DoStartRuntimeEnv();
 		return "Success";
 	}
 
@@ -853,6 +844,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String StopRuntimeEnv() {
 		tf.traceEvent(101);
+		timestampForKafkaConsumer = System.currentTimeMillis();
 
 		interrupted = true;
 		threadRunningEnvironment.interrupt();
@@ -874,11 +866,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		while (threadRunningEnvironment.isAlive()) {
                         threadRunningEnvironment.interrupt();
-			try {
-			        Thread.sleep(1000);
-			} catch (InterruptedException e) {
-			        e.printStackTrace();
-			}
+			Thread.yield();
 		}
 		return "Success";
 	}
@@ -1047,11 +1035,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		File savepointPathFile = new File(savepointPath);
 		while (!savepointPathFile.exists()) {
-			try {
-				Thread.sleep(1);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
+			Thread.yield();
 		}
 
 		// TODO: zip savepointPath
@@ -1189,8 +1173,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		DeployQueries(map_query);
 		StopRuntimeEnv();
 		env.setSavepointRestoreSettings(savepointRestoreSettings);
-		StartRuntimeEnv();
-
+		DoStartRuntimeEnv();
 		long ms_stop1 = System.currentTimeMillis();
 		ResumeStream(new ArrayList<>(stream_ids_to_source_node_ids.keySet()));
 		long ms_stop2 = System.currentTimeMillis();
