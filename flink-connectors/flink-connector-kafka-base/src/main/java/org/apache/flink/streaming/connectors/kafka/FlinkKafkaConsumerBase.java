@@ -506,7 +506,20 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 
 		subscribedPartitionsToStartOffsets = new HashMap<>();
 		final List<KafkaTopicPartition> allPartitions = partitionDiscoverer.discoverPartitions();
+
+		// Espen: the logic here is only to go with the original "restore" topic offset if the restored state
+		// refers to the topic. Otherwise, we use our own configuration.
+		// This is meant for migration and not just savepoint restoration
+		boolean restoreTopic = false;
 		if (restoredState != null) {
+			for (KafkaTopicPartition partition : allPartitions) {
+				if (restoredState.containsKey(partition)) {
+					restoreTopic = true;
+					break;
+				}
+			}
+		}
+		if (restoreTopic) {
 			for (KafkaTopicPartition partition : allPartitions) {
 				if (!restoredState.containsKey(partition)) {
 					restoredState.put(partition, KafkaTopicPartitionStateSentinel.EARLIEST_OFFSET);
