@@ -289,7 +289,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				long newTime = System.currentTimeMillis();
 				++cnt[0];
 				//System.out.println("Received row: " + value);
-				//System.out.println("Received tuple " + cnt[0]);
+				//System.out.println("Received tuple " + cnt[0] + ": " + value);
 				// We only log once every maximum one second, to avoid too many tracepoints
 				if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
 					LOG.info("Received tuple {}", cnt[0]);
@@ -677,7 +677,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String AddSchemas(List<Map<String, Object>> schemas) {
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state"));
+		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
 		env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
@@ -852,7 +852,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		threadRunningEnvironment.interrupt();
 
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state"));
+		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
 		env.setSavepointRestoreSettings(null);
 		env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
@@ -899,7 +899,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				String topicName = stream_name + "-" + otherNodeId;
 				//for (Row tuple : streamToTuples.get(stream_id)) {
 				if (++tupleCnt % 100000 == 0) {
-					System.out.println( System.nanoTime() + ": Sending tuple " + (++tupleCnt) + " to node " + otherNodeId + " with topic " + topicName);
+					System.out.println( System.nanoTime() + ": Sending tuple " + (++tupleCnt) + " to node " + otherNodeId + " with topic " + topicName + " and IP " + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
 				}
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, null, null, serializationSchema.serialize(row)));
 				//}
