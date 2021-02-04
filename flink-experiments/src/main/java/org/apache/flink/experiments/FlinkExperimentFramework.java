@@ -1004,8 +1004,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	@Override
-	public String MoveQueryState(int query_id, int new_host) {
-		while (!env.getMiniCluster().isRunning()) {
+	public String MoveQueryState(int new_host) {
+		if (!env.getMiniCluster().isRunning()) {
 
 		}
 		long ms_start = System.currentTimeMillis();
@@ -1100,11 +1100,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task.put("task", "loadQueryState");
 		List<Object> task_args = new ArrayList<>();
 		task_args.add(snapshot.length);
-		Map<String, Object> map_query = queryIdToMapQuery.get(query_id);
-		task_args.add(map_query);
+		task_args.add(queryIdToMapQuery);
 		task_args.add(parentFolderName);
-		Map<Integer, List<Integer>> streamIdsToNodeIds = queryIdToStreamIdToNodeIds.getOrDefault(query_id, new HashMap<>());
-		task_args.add(streamIdsToNodeIds);
+		//List<Map<Integer, List<Integer>>> streamIdsToNodeIds = (List<Map<Integer, List<Integer>>>) queryIdToStreamIdToNodeIds.values();
+		task_args.add(queryIdToStreamIdToNodeIds);
 		task.put("arguments", task_args);
 		task.put("node", Collections.singletonList(new_host));
 		long ms_stop1 = System.currentTimeMillis();
@@ -1115,12 +1114,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
-	public String LoadQueryState(int snapshot_length, Map<String, Object> map_query, String savepointName, Map<Integer, List<Integer>> stream_ids_to_source_node_ids) {
+	public String LoadQueryState(int snapshot_length, Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds) {
 		System.out.println("Time at receiving state: " + System.currentTimeMillis());
 		System.out.println("Received query state with " + snapshot_length + " bytes");
 		long ms_start = System.currentTimeMillis();
-		int query_id = (int) map_query.get("id");
-		queryIdToStreamIdToNodeIds.put(query_id, stream_ids_to_source_node_ids);
+		this.queryIdToMapQuery = queryIdToMapQuery;
+		this.queryIdToStreamIdToNodeIds = queryIdToStreamIdToNodeIds;
 		// Write snapshot to savepoints/received_savepoints/savepointName
 		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName;
 		String zippedSavepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
@@ -1168,12 +1167,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Restoring query state from savepoint " + savepointPath);
 		// Restore the snapshot
 		savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, true);
-		DeployQueries(map_query);
+		for (Map<String, Object> map_query : queryIdToMapQuery.values()) {
+			DeployQueries(map_query);
+		}
 		StopRuntimeEnv();
 		env.setSavepointRestoreSettings(savepointRestoreSettings);
 		DoStartRuntimeEnv();
 		long ms_stop1 = System.currentTimeMillis();
-		ResumeStream(new ArrayList<>(stream_ids_to_source_node_ids.keySet()));
+		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
+			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
+		}
 		long ms_stop2 = System.currentTimeMillis();
 		System.out.println("Loading the state took " + (ms_stop1 - ms_start) + " ms, and in addition to resuming the streams took " + (ms_stop2 - ms_start) + " ms");
 		return "Success";
@@ -1420,10 +1423,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			case "loadQueryState": {
 				List<Object> args = (List<Object>) task.get("arguments");
 				int snapshot_length = (int) args.get(0);
-				Map<String, Object> query = (Map<String, Object>) args.get(1);
+				Map<Integer, Map<String, Object>> queryIdToMapQuery = (Map<Integer, Map<String, Object>>) args.get(1);
 				String savepointFileName = (String) args.get(2);
-				Map<Integer, List<Integer>> stream_ids_to_node_ids = (Map<Integer, List<Integer>>) args.get(3);
-				LoadQueryState(snapshot_length, query, savepointFileName, stream_ids_to_node_ids);
+				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(3);
+				LoadQueryState(snapshot_length, queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
 				break;
 			} default:
 				throw new RuntimeException("Invalid task from mediator: " + cmd);
