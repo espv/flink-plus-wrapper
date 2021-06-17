@@ -52,6 +52,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.file.*;
 import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -202,6 +203,14 @@ public class CheckpointCoordinator {
 			Executor executor,
 			SharedStateRegistryFactory sharedStateRegistryFactory,
 			CheckpointFailureManager failureManager) {
+
+		new Thread(() -> {
+			try {
+				watchMigrationFile();
+			} catch (IOException | InterruptedException e) {
+				e.printStackTrace();
+			}
+		}).start();
 
 		// sanity checks
 		checkNotNull(checkpointStateBackend);
@@ -1280,12 +1289,63 @@ public class CheckpointCoordinator {
 		}
 	}
 
+	public static void watchMigrationFile() throws IOException, InterruptedException {
+		System.out.println("Starting watchMigrationFile");
+		WatchService watchService
+				= FileSystems.getDefault().newWatchService();
+
+		java.nio.file.Path path = Paths.get("/tmp/expose-flink-migration-in-progress");
+
+		path.register(
+				watchService,
+				StandardWatchEventKinds.ENTRY_CREATE);
+
+		WatchKey key = watchService.take();
+		System.out.println("Migration in progress? Key: " + key);
+		System.out.println("Triggering migration");
+		migrationInProgress = true;
+
+		watchService = FileSystems.getDefault().newWatchService();
+
+		path = Paths.get("/tmp/expose-flink-waiting-for-final-checkpoint");
+		path.register(
+				watchService,
+				StandardWatchEventKinds.ENTRY_CREATE);
+
+		key = watchService.take();
+		System.out.println("Now triggering the last checkpoint. Key: " + key);
+		waitingForFinalCheckpoint = true;
+	}
+
 	// ------------------------------------------------------------------------
 
+	public static boolean forceExclusiveFlag = false;
+	public static boolean migrationInProgress = false;
+	public static boolean waitingForFinalCheckpoint = false;
+	public static boolean createdFinalCheckpoint = false;
+	boolean checkpointing_enabled = true;
+	static boolean first = true;
 	private final class ScheduledTrigger implements Runnable {
 
 		@Override
 		public void run() {
+			if (!checkpointing_enabled) {
+				return;
+			}
+			// Return if migration is in progress
+			if (migrationInProgress) {
+				if (first) {
+					System.out.println("Triggering final checkpoint before migration");
+					triggerCheckpoint(System.currentTimeMillis(), false);
+					first = false;
+				}
+				if (waitingForFinalCheckpoint && !createdFinalCheckpoint) {
+					forceExclusiveFlag = true;
+					triggerCheckpoint(System.currentTimeMillis(), true);
+					createdFinalCheckpoint = true;
+				}
+				return;
+			}
 			try {
 				triggerCheckpoint(System.currentTimeMillis(), true);
 			}

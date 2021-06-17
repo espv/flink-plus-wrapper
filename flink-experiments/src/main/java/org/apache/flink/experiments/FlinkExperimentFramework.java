@@ -17,20 +17,19 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
-import org.apache.flink.client.program.MiniClusterClient;
+import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
-import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
+import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
-import org.apache.flink.streaming.connectors.kafka.internal.KafkaFetcher;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.java.StreamTableEnvironment;
@@ -49,12 +48,13 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static com.google.common.primitives.Longs.min;
 import static java.lang.Math.abs;
 
 @SuppressWarnings("unchecked")
@@ -65,7 +65,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	int pktsPublished;
 	int interval_wait;
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
-	boolean useRowtime = true;
+	boolean useRowtime = false;
 	String trace_output_folder;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
@@ -77,7 +77,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	List<Map<String, Object>> fetchQueries = new ArrayList<>();
 	ArrayList<Map<String, Object>> queries = new ArrayList<>();
 	Map<Integer, Map<String, Object>> allSchemas = new HashMap<>();
-	Map<Integer, TypeInformation<Row>> streamIdToTypeInfo = new HashMap<>();
+	Map<Integer, RowTypeInfo> streamIdToTypeInfo = new HashMap<>();
 	static Map<Integer, TypeInformationSerializationSchema<Row>> streamIdToSerializationSchema = new HashMap<>();
 	Map<String, Integer> streamNameToId = new HashMap<>();
 	Map<Integer, String> streamIdToName = new HashMap<>();
@@ -100,6 +100,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	List<FlinkKafkaConsumer<Row>> consumers = new ArrayList<>();
 	long timestampForKafkaConsumer = 0;
 	long millisecond100Offset = 0;
+	FsStateBackend fsStateBackend;
 
 	SpeTaskHandler speComm;
 
@@ -396,6 +397,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			// Add order to tuples and place them in ordered_tuples
 			for (Map<String, Object> tuple : raw_tuples) {
 				//tuple.put("_order", i++);
+
 				int tuple_stream_id = (int) tuple.get("stream-id");
 				if (ordered_tuples.get(tuple_stream_id) == null) {
 					ordered_tuples.put(tuple_stream_id, new ArrayList<>());
@@ -417,8 +419,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			for (Map<String, Object> tuple : tuples) {
 				AddTuples(tuple, 1);
 			}
+			ProcessTuples(tuples.size(), true);
 		}
-		ProcessTuples(iterations * tuples.size());
 		return "Success";
 	}
 
@@ -661,7 +663,64 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
+	public static class RandomString {
+
+		/**
+		 * Generate a random string.
+		 */
+		public String nextString() {
+			for (int idx = 0; idx < buf.length; ++idx)
+				buf[idx] = symbols[random.nextInt(symbols.length)];
+			return new String(buf);
+		}
+
+		public static final String upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+		public static final String lower = upper.toLowerCase(Locale.ROOT);
+
+		public static final String digits = "0123456789";
+
+		public static final String alphanum = upper + lower + digits;
+
+		private final Random random;
+
+		private final char[] symbols;
+
+		private final char[] buf;
+
+		public RandomString(int length, Random random, String symbols) {
+			if (length < 1) throw new IllegalArgumentException();
+			if (symbols.length() < 2) throw new IllegalArgumentException();
+			this.random = Objects.requireNonNull(random);
+			this.symbols = symbols.toCharArray();
+			this.buf = new char[length];
+		}
+
+		/**
+		 * Create an alphanumeric string generator.
+		 */
+		public RandomString(int length, Random random) {
+			this(length, random, alphanum);
+		}
+
+		/**
+		 * Create an alphanumeric strings from a secure generator.
+		 */
+		public RandomString(int length) {
+			this(length, new SecureRandom());
+		}
+
+		/**
+		 * Create session identifiers.
+		 */
+		public RandomString() {
+			this(21);
+		}
+
+	}
+
 	public String AddTuples(Map<String, Object> tuple, int quantity) {
+		RandomString rs = new RandomString(1024);
 		int stream_id = (int) tuple.get("stream-id");
 		ArrayList<Map<String, Object> > attributes = (ArrayList<Map<String, Object> >) tuple.get("attributes");
 		Row new_tuple = new Row(attributes.size());
@@ -677,12 +736,23 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String AddSchemas(List<Map<String, Object>> schemas) {
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
+		env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
+		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
+		try {
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, true);
+			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
+			env.setStateBackend(rocksdb);
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(1021);
+		}
+		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
 		env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
-			env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
+			env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
 		}
 		tableEnv = StreamTableEnvironment.create(env, fsSettings);
 		tableEnv.registerFunction("DOLTOEUR", new DolToEur());
@@ -821,6 +891,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			//KafkaFetcher.receivedTuples = 0;
 			timeLastRecvdTuple = 0;
 			receivedTuples = 0;
+			System.out.println("Starting runtime");
 			try {
 				env.execute();
 			} catch (Exception e) {
@@ -852,13 +923,24 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		threadRunningEnvironment.interrupt();
 
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
-		env.setSavepointRestoreSettings(null);
+		env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
+		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
+		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
+		try {
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, true);
+			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
+			env.setStateBackend(rocksdb);
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(1020);
+		}
+		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
 		env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
-			env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
+			env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
 		}
 		tableEnv = StreamTableEnvironment.create(env, fsSettings);
 		tableEnv.registerFunction("DOLTOEUR", new DolToEur());
@@ -887,12 +969,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	int tupleCnt = 0;
-	public String ProcessTuples(int number_tuples) {
+	RandomString rs = new RandomString(32);
+	public String ProcessTuples(int number_tuples, boolean clear_tuples) {
 		System.out.println("Processing " + number_tuples + ", or more correctly: " + all_tuples.size() + " tuples");
 		for (int i = 0; i < all_tuples.size(); i++) {
 			Tuple2<Integer, Row> tuple = all_tuples.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
+			if (stream_id == 2) {
+				row.setField(1, rs.nextString());
+			}
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
 			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
@@ -906,7 +992,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 		}
 
-		all_tuples.clear();
+		if (clear_tuples) {
+			all_tuples.clear();
+		}
 		pktsPublished = 0;
 		return "Success";
 	}
@@ -1005,20 +1093,46 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String MoveQueryState(int new_host) {
+		//boolean cont = true;
+		//System.out.println("Now about to wait forever before savepoint");
+		//while (cont) {
+
+		//}
 		if (!env.getMiniCluster().isRunning()) {
 
 		}
+
+		File lockFile = null;
+		File lockFile2 = null;
+		String checkpointDirectory = null;
 		long ms_start = System.currentTimeMillis();
 		try {
 			while (env.getMiniCluster().listJobs().get().size() == 0) {
 				Thread.yield();
 			}
 			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
+
+			new File("/tmp/expose-flink-migration-in-progress").mkdir();
+			lockFile = new File("/tmp/expose-flink-migration-in-progress/" + jobID);
+			try {
+				lockFile.createNewFile();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			// Now we have the jobID
+			// Location of checkpoints is "file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID
+			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
+			savepointPath = checkpointDirectory;
+
 			while (env.getMiniCluster().getJobStatus(jobID).get() != JobStatus.RUNNING) {
 				Thread.yield();
 			}
 
-			boolean repeat = true;
+			// TODO: HERE WE SEND THE STATE, EXCLUDING THE INCREMENTAL CHECKPOINT
+
+			Thread.sleep(3000);
+			//StopRuntimeEnv();
+			/*boolean repeat = true;
 			while (repeat) {
 				repeat = false;
 				try {
@@ -1027,18 +1141,46 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				} catch (ExecutionException e) {
 					repeat = true;
 				}
+			}*/
+			//StopRuntimeEnv();
+			//Thread.sleep(10000);
+
+			/*for (Map<String, Object> map_query : queryIdToMapQuery.values()) {
+				DeployQueries(map_query);
+			}*/
+			//savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, true);
+			//savepointRestoreSettings = SavepointRestoreSettings.forPath(newestIncrementalCheckpoint.getPath(), false);
+			//env.setSavepointRestoreSettings(savepointRestoreSettings);
+			//DoStartRuntimeEnv();
+
+			/*for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
+				ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 			}
+
+			boolean cont = true;
+			if (cont) {
+				return "Success";
+			}*/
+			//System.out.println("Waiting forever");
+			//while (cont);
+
 		} catch (InterruptedException | ExecutionException e) {
 			e.printStackTrace();
 			System.exit(31);
 		}
 
-		File savepointPathFile = new File(savepointPath);
-		while (!savepointPathFile.exists()) {
+		//File savepointPathFile = new File(savepointPath);
+		/*while (!savepointPathFile.exists()) {
 			Thread.yield();
-		}
-
+		}*/
 		// TODO: zip savepointPath
+		/*String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		try {
+			ZipDirectory.zipDirectory(savepointPath, zipPath);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}*/
+
 		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 		try {
 			ZipDirectory.zipDirectory(savepointPath, zipPath);
@@ -1067,10 +1209,15 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
+		// Deleting first zip
+		file.delete();
 
-		byte[] finalSnapshot = snapshot;
+		AtomicReference<OutputStream> out = new AtomicReference<>();
+		AtomicBoolean sentFirstZip = new AtomicBoolean(false);
+		final byte[] finalSnapshot = snapshot;
 		new Thread(() -> {
 			// Begin to set up state transfer connection
+			System.out.println("New host: " + new_host);
 			String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
 			int new_host_state_transfer_port = (int) this.nodeIdToIpAndPort.get(new_host).get("state-transfer-port");
 			Socket clientSocket = null;
@@ -1080,26 +1227,109 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 				System.exit(100);
 			}
-			OutputStream out = null;
 			try {
-				out = clientSocket.getOutputStream();
+				out.set(clientSocket.getOutputStream());
 			} catch (IOException e) {
 				e.printStackTrace();
 				System.exit(101);
 			}
 			try {
-				out.write(finalSnapshot);
+				out.get().write(finalSnapshot);
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			// Now we have sent the snapshot to the new host
+			// The new host will receive in the task how many bytes it must receive on its socket
+			sentFirstZip.set(true);
+		}).start();
+
+		try {
+			Thread.sleep(20000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		new File("/tmp/expose-flink-waiting-for-final-checkpoint").mkdir();
+		lockFile2 = new File("/tmp/expose-flink-waiting-for-final-checkpoint/" + jobID);
+		try {
+			lockFile2.createNewFile();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		try {
+			Thread.sleep(10000);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+		// TODO: SEND FINAL CHECKPOINT
+		// TODO: SEND THE FINAL INCREMENTAL CHECKPOINT
+		File newestIncrementalCheckpoint = null;
+		int maxCheckpointNumber = 0;
+		for (File child : new File(checkpointDirectory).listFiles()) {
+			if (child.getName().startsWith("chk-")) {
+				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
+				if (checkpointNumber > maxCheckpointNumber) {
+					maxCheckpointNumber = checkpointNumber;
+					newestIncrementalCheckpoint = child;
+				}
+			}
+		}
+		assert newestIncrementalCheckpoint != null;
+
+		System.out.println("Loading checkpoint " + newestIncrementalCheckpoint.getPath());
+		zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		try {
+			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		// Read savepointPath and send it as a byte array
+		// LoadQueryState() will write the array to file and restore it
+		snapshot = null;
+		System.out.println("Moving query state from savepoint " + savepointPath);
+		path = savepointPath.split("/");
+		parentFolderName = path[path.length-1];
+		file = new File(zipPath);
+		while (!file.exists()) {
+			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
+			try {
+				System.out.println("Waiting for savepoint file (canonical) " + file.getCanonicalPath() + " to be created");
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			System.out.println("Waiting for savepoint file (absolute) " + file.getAbsolutePath() + " to be created");
+		}
+		try {
+			snapshot = FileUtils.readFileToByteArray(file);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		final byte[] finalSnapshot2 = snapshot;
+		new Thread(() -> {
+			// Begin to set up state transfer connection
+			while (!sentFirstZip.get()) {
+				Thread.yield();
+			}
+			System.out.println("New host: " + new_host);
+			try {
+				System.out.println("Before sending the mutable state");
+				out.get().write(finalSnapshot2);
+				System.out.println("After sending the mutable state");
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
 			// Now we have sent the snapshot to the new host
 			// The new host will receive in the task how many bytes it must receive on its socket
 		}).start();
+		// TODO: END OF SENDING FINAL CHECKPOINT
 
 		Map<String, Object> task = new HashMap<>();
 		task.put("task", "loadQueryState");
 		List<Object> task_args = new ArrayList<>();
-		task_args.add(snapshot.length);
+		task_args.add(finalSnapshot.length);
+		task_args.add(finalSnapshot2.length);
 		task_args.add(queryIdToMapQuery);
 		task_args.add(parentFolderName);
 		//List<Map<Integer, List<Integer>>> streamIdsToNodeIds = (List<Map<Integer, List<Integer>>>) queryIdToStreamIdToNodeIds.values();
@@ -1114,7 +1344,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
-	public String LoadQueryState(int snapshot_length, Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds) {
+	public String LoadQueryState(int snapshot_length, int snapshot2_length, Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds) {
 		System.out.println("Time at receiving state: " + System.currentTimeMillis());
 		System.out.println("Received query state with " + snapshot_length + " bytes");
 		long ms_start = System.currentTimeMillis();
@@ -1152,6 +1382,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
+		System.out.println("Received immutable state");
 
 		while (!zip.exists());
 
@@ -1164,9 +1395,61 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			e.printStackTrace();
 		}
 
+		byte[] snapshot2 = new byte[snapshot2_length];
+		try {
+			System.out.println("Before reading the mutable state");
+			new DataInputStream(client_socket.getInputStream()).readFully(snapshot2);
+			System.out.println("After reading the mutable state");
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(103);
+		}
+
+		File zip2 = new File(zippedSavepointPath);
+		zip2.delete();
+		try {
+			zip2.createNewFile();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		try {
+			FileUtils.writeByteArrayToFile(zip2, snapshot2);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		System.out.println("Received mutable state");
+		while (!zip2.exists());
+
+		// The difference between Zip 1 and 2 is that we place the contents of the second zip
+		// within the first unzipped folder
+		String[] savepointParentPathArray2 = savepointPath.split("/");
+		String savepointParentPath2 = String.join("/", savepointParentPathArray2);
+		try {
+			UnzipFile.unzip(zippedSavepointPath, savepointParentPath2);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
+		File newestIncrementalCheckpoint = null;
+		int maxCheckpointNumber = 0;
+		for (File child : new File(savepointPath).listFiles()) {
+			if (child.getName().startsWith("chk-")) {
+				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
+				if (checkpointNumber > maxCheckpointNumber) {
+					maxCheckpointNumber = checkpointNumber;
+					newestIncrementalCheckpoint = child;
+				}
+			}
+		}
+		assert newestIncrementalCheckpoint != null;
+		savepointPath = newestIncrementalCheckpoint.getPath();
+
 		System.out.println("Restoring query state from savepoint " + savepointPath);
 		// Restore the snapshot
-		savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, true);
+		savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, false);
 		for (Map<String, Object> map_query : queryIdToMapQuery.values()) {
 			DeployQueries(map_query);
 		}
@@ -1423,10 +1706,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			case "loadQueryState": {
 				List<Object> args = (List<Object>) task.get("arguments");
 				int snapshot_length = (int) args.get(0);
-				Map<Integer, Map<String, Object>> queryIdToMapQuery = (Map<Integer, Map<String, Object>>) args.get(1);
-				String savepointFileName = (String) args.get(2);
-				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(3);
-				LoadQueryState(snapshot_length, queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
+				int snapshot2_length = (int) args.get(1);
+				Map<Integer, Map<String, Object>> queryIdToMapQuery = (Map<Integer, Map<String, Object>>) args.get(2);
+				String savepointFileName = (String) args.get(3);
+				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(4);
+				LoadQueryState(snapshot_length, snapshot2_length, queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
 				break;
 			} default:
 				throw new RuntimeException("Invalid task from mediator: " + cmd);

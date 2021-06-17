@@ -22,6 +22,7 @@ import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.concurrent.FutureUtils;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
 import org.apache.flink.runtime.state.CheckpointedStateScope;
@@ -117,8 +118,15 @@ public class RocksDBStateUploader extends RocksDBStateDataTransfer {
 			inputStream = backupFileSystem.open(filePath);
 			closeableRegistry.registerCloseable(inputStream);
 
-			outputStream = checkpointStreamFactory
-				.createCheckpointStateOutputStream(CheckpointedStateScope.SHARED);
+			if (CheckpointCoordinator.forceExclusiveFlag) {
+				// We're now forcing incremental checkpointing
+				System.out.println("Forcing an incremental checkpoint");
+				outputStream = checkpointStreamFactory
+						.createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
+			} else {
+				outputStream = checkpointStreamFactory
+						.createCheckpointStateOutputStream(CheckpointedStateScope.SHARED);
+			}
 			closeableRegistry.registerCloseable(outputStream);
 
 			while (true) {
