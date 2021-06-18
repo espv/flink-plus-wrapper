@@ -51,14 +51,10 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
-import java.util.ArrayDeque;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
@@ -78,6 +74,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * reported by the tasks that acknowledge the checkpoint.
  */
 public class CheckpointCoordinator {
+	public static CheckpointCoordinator checkpointCoordinator;
 
 	private static final Logger LOG = LoggerFactory.getLogger(CheckpointCoordinator.class);
 
@@ -271,6 +268,8 @@ public class CheckpointCoordinator {
 		} catch (Throwable t) {
 			throw new RuntimeException("Failed to start checkpoint ID counter: " + t.getMessage(), t);
 		}
+
+		CheckpointCoordinator.checkpointCoordinator = this;
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -1289,7 +1288,7 @@ public class CheckpointCoordinator {
 		}
 	}
 
-	public static void watchMigrationFile() throws IOException, InterruptedException {
+	public void watchMigrationFile() throws IOException, InterruptedException {
 		System.out.println("Starting watchMigrationFile");
 		WatchService watchService
 				= FileSystems.getDefault().newWatchService();
@@ -1303,7 +1302,16 @@ public class CheckpointCoordinator {
 		WatchKey key = watchService.take();
 		System.out.println("Migration in progress? Key: " + key);
 		System.out.println("Triggering migration");
+		long nanosBeforeCheckpoint = System.nanoTime();
 		migrationInProgress = true;
+
+		// first means we still haven't started the final checkpoint before migration
+		// pendingCheckpoints not being empty means we still have checkpoints in progress
+		while (first || !pendingCheckpoints.isEmpty()) {
+			//System.out.println(first + "-" + !pendingCheckpoints.isEmpty() + "-" + (nanosBeforeCheckpoint > lastCheckpointCompletionNanos));
+			Thread.yield();
+		}
+		new File("/tmp/expose-flink-checkpoints-done/" + this.job).createNewFile();
 
 		watchService = FileSystems.getDefault().newWatchService();
 
@@ -1314,17 +1322,27 @@ public class CheckpointCoordinator {
 
 		key = watchService.take();
 		System.out.println("Now triggering the last checkpoint. Key: " + key);
+		nanosBeforeCheckpoint = System.nanoTime();
 		waitingForFinalCheckpoint = true;
+
+		// !createdFinalCheckpoint means we still haven't run the function to create the final checkpoint
+		// pendingCheckpoints not being empty means we still have checkpoints in progress
+		while (!createdFinalCheckpoint || !pendingCheckpoints.isEmpty()) {
+			//System.out.println(!createdFinalCheckpoint + "-" + !pendingCheckpoints.isEmpty() + "-" + (nanosBeforeCheckpoint > lastCheckpointCompletionNanos));
+			Thread.yield();
+		}
+		new File("/tmp/expose-flink-checkpoints-done2/" + this.job).createNewFile();
+		System.out.println("Created the file /tmp/expose-flink-checkpoints-done2/" + this.job);
 	}
 
 	// ------------------------------------------------------------------------
 
-	public static boolean forceExclusiveFlag = false;
-	public static boolean migrationInProgress = false;
-	public static boolean waitingForFinalCheckpoint = false;
-	public static boolean createdFinalCheckpoint = false;
+	public boolean forceExclusiveFlag = false;
+	public boolean migrationInProgress = false;
+	public boolean waitingForFinalCheckpoint = false;
+	public boolean createdFinalCheckpoint = false;
 	boolean checkpointing_enabled = true;
-	static boolean first = true;
+	boolean first = true;
 	private final class ScheduledTrigger implements Runnable {
 
 		@Override

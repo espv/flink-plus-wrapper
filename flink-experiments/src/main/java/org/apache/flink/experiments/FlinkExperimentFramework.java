@@ -18,6 +18,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
+import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
@@ -45,9 +46,7 @@ import org.yaml.snakeyaml.Yaml;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.util.*;
@@ -1093,17 +1092,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String MoveQueryState(int new_host) {
-		//boolean cont = true;
-		//System.out.println("Now about to wait forever before savepoint");
-		//while (cont) {
-
-		//}
-		if (!env.getMiniCluster().isRunning()) {
-
-		}
-
-		File lockFile = null;
-		File lockFile2 = null;
+		File lockFile;
+		File lockFile2;
 		String checkpointDirectory = null;
 		long ms_start = System.currentTimeMillis();
 		try {
@@ -1119,8 +1109,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
-			// Now we have the jobID
-			// Location of checkpoints is "file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID
+
 			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
@@ -1128,41 +1117,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				Thread.yield();
 			}
 
-			// TODO: HERE WE SEND THE STATE, EXCLUDING THE INCREMENTAL CHECKPOINT
-
 			Thread.sleep(3000);
-			//StopRuntimeEnv();
-			/*boolean repeat = true;
-			while (repeat) {
-				repeat = false;
-				try {
-					CompletableFuture task = env.getMiniCluster().stopWithSavepoint(jobID, System.getenv("FLINK_BINARIES") + "/savepoints/created_savepoints", true);
-					savepointPath = ((String) task.get()).split(":")[1];
-				} catch (ExecutionException e) {
-					repeat = true;
-				}
-			}*/
-			//StopRuntimeEnv();
-			//Thread.sleep(10000);
 
-			/*for (Map<String, Object> map_query : queryIdToMapQuery.values()) {
-				DeployQueries(map_query);
-			}*/
-			//savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, true);
-			//savepointRestoreSettings = SavepointRestoreSettings.forPath(newestIncrementalCheckpoint.getPath(), false);
-			//env.setSavepointRestoreSettings(savepointRestoreSettings);
-			//DoStartRuntimeEnv();
-
-			/*for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
-				ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
-			}
-
-			boolean cont = true;
-			if (cont) {
-				return "Success";
-			}*/
-			//System.out.println("Waiting forever");
-			//while (cont);
 
 		} catch (InterruptedException | ExecutionException e) {
 			e.printStackTrace();
@@ -1212,8 +1168,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// Deleting first zip
 		file.delete();
 
-		AtomicReference<OutputStream> out = new AtomicReference<>();
-		AtomicBoolean sentFirstZip = new AtomicBoolean(false);
 		final byte[] finalSnapshot = snapshot;
 		new Thread(() -> {
 			// Begin to set up state transfer connection
@@ -1228,15 +1182,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				System.exit(100);
 			}
 			try {
-				out.set(clientSocket.getOutputStream());
+				dos.set(new DataOutputStream(clientSocket.getOutputStream()));
+				dos.get().writeInt(finalSnapshot.length);
+				dos.get().write(finalSnapshot);
 			} catch (IOException e) {
 				e.printStackTrace();
 				System.exit(101);
-			}
-			try {
-				out.get().write(finalSnapshot);
-			} catch (IOException e) {
-				e.printStackTrace();
 			}
 			// Now we have sent the snapshot to the new host
 			// The new host will receive in the task how many bytes it must receive on its socket
@@ -1315,7 +1266,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			System.out.println("New host: " + new_host);
 			try {
 				System.out.println("Before sending the mutable state");
-				out.get().write(finalSnapshot2);
+				dos.get().writeInt(finalSnapshot2.length);
+				dos.get().write(finalSnapshot2);
 				System.out.println("After sending the mutable state");
 			} catch (IOException e) {
 				e.printStackTrace();
@@ -1465,14 +1417,348 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
+	public void watchMigrationFile(String name) throws IOException, InterruptedException {
+		WatchService watchService
+				= FileSystems.getDefault().newWatchService();
+
+		java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + name);
+
+		path.register(
+				watchService,
+				StandardWatchEventKinds.ENTRY_CREATE);
+
+		watchService.take();
+	}
+
+	AtomicReference<DataOutputStream> dos = new AtomicReference<>();
+
+	AtomicBoolean sentFirstZip = new AtomicBoolean(false);
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
-		return null;
+		File lockFile;
+		new File("/tmp/expose-flink-checkpoints-done").mkdir();
+		new File("/tmp/expose-flink-checkpoints-done2").mkdir();
+		new File("/tmp/expose-flink-waiting-for-final-checkpoint").mkdir();
+		String checkpointDirectory = null;
+		long ms_start = System.currentTimeMillis();
+		try {
+			while (env.getMiniCluster().listJobs().get().size() == 0) {
+				Thread.yield();
+			}
+			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
+
+			new File("/tmp/expose-flink-migration-in-progress").mkdir();
+			lockFile = new File("/tmp/expose-flink-migration-in-progress/" + jobID);
+			try {
+				lockFile.createNewFile();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+
+			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
+			savepointPath = checkpointDirectory;
+
+			while (env.getMiniCluster().getJobStatus(jobID).get() != JobStatus.RUNNING) {
+				Thread.yield();
+			}
+
+		} catch (InterruptedException | ExecutionException e) {
+			e.printStackTrace();
+			System.exit(31);
+		}
+
+		// Here we ensure that no checkpoint is currently in progress
+		try {
+			watchMigrationFile("checkpoints-done");
+		} catch (IOException | InterruptedException e) {
+			e.printStackTrace();
+			System.exit(58);
+		}
+
+		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		try {
+			ZipDirectory.zipDirectory(savepointPath, zipPath);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		// Read savepointPath and send it as a byte array
+		// LoadQueryState() will write the array to file and restore it
+		byte[] snapshot = null;
+		System.out.println("Moving query state from savepoint " + savepointPath);
+		String[] path = savepointPath.split("/");
+		String parentFolderName = path[path.length-1];
+		File file = new File(zipPath);
+		while (!file.exists()) {
+			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
+			try {
+				System.out.println("Waiting for savepoint file (canonical) " + file.getCanonicalPath() + " to be created");
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			System.out.println("Waiting for savepoint file (absolute) " + file.getAbsolutePath() + " to be created");
+		}
+		try {
+			snapshot = FileUtils.readFileToByteArray(file);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		// Deleting first zip
+		file.delete();
+
+		final byte[] finalSnapshot = snapshot;
+		new Thread(() -> {
+			// Begin to set up state transfer connection
+			System.out.println("New host: " + new_host);
+			String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
+			int new_host_state_transfer_port = (int) this.nodeIdToIpAndPort.get(new_host).get("state-transfer-port");
+			Socket clientSocket = null;
+			try {
+				clientSocket = new Socket(ip, new_host_state_transfer_port);
+			} catch (IOException e) {
+				e.printStackTrace();
+				System.exit(100);
+			}
+			try {
+				dos.set(new DataOutputStream(clientSocket.getOutputStream()));
+			} catch (IOException e) {
+				e.printStackTrace();
+				System.exit(101);
+			}
+			try {
+				System.out.println("Sending immutable state with " + finalSnapshot.length + " bytes");
+				dos.get().writeInt(finalSnapshot.length);
+				System.out.println("Sent length of immutable state");
+				dos.get().write(finalSnapshot);
+				System.out.println("Sent immutable state");
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			// Now we have sent the snapshot to the new host
+			// The new host will receive in the task how many bytes it must receive on its socket
+			sentFirstZip.set(true);
+		}).start();
+
+		Map<String, Object> task = new HashMap<>();
+		task.put("task", "loadQueryState");
+		List<Object> task_args = new ArrayList<>();
+		task_args.add(queryIdToMapQuery);
+		task_args.add(parentFolderName);
+		//List<Map<Integer, List<Integer>>> streamIdsToNodeIds = (List<Map<Integer, List<Integer>>>) queryIdToStreamIdToNodeIds.values();
+		task_args.add(queryIdToStreamIdToNodeIds);
+		task.put("arguments", task_args);
+		task.put("node", Collections.singletonList(new_host));
+		long ms_stop1 = System.currentTimeMillis();
+		System.out.println("Time at sending state: " + System.currentTimeMillis());
+		new Thread(() -> speComm.speNodeComm.SendToSpe(task)).start();
+		long ms_stop2 = System.currentTimeMillis();
+		System.out.println("Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
+		return "Success";
 	}
 
 	@Override
 	public String MoveDynamicQueryState(int query_id, int new_host) {
-		return null;
+		File lockFile2;
+		String checkpointDirectory = null;
+		try {
+			while (env.getMiniCluster().listJobs().get().size() == 0) {
+				Thread.yield();
+			}
+			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
+
+			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
+			savepointPath = checkpointDirectory;
+
+			while (env.getMiniCluster().getJobStatus(jobID).get() != JobStatus.RUNNING) {
+				Thread.yield();
+			}
+		} catch (InterruptedException | ExecutionException e) {
+			e.printStackTrace();
+			System.exit(31);
+		}
+
+		lockFile2 = new File("/tmp/expose-flink-waiting-for-final-checkpoint/" + jobID);
+		try {
+			lockFile2.createNewFile();
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		// Now we wait until the checkpoint is done
+		try {
+			watchMigrationFile("checkpoints-done2");
+		} catch (IOException | InterruptedException e) {
+			e.printStackTrace();
+			System.exit(59);
+		}
+
+		// TODO: SEND FINAL CHECKPOINT
+		// TODO: SEND THE FINAL INCREMENTAL CHECKPOINT
+		File newestIncrementalCheckpoint = null;
+		int maxCheckpointNumber = 0;
+		for (File child : new File(checkpointDirectory).listFiles()) {
+			if (child.getName().startsWith("chk-")) {
+				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
+				if (checkpointNumber > maxCheckpointNumber) {
+					maxCheckpointNumber = checkpointNumber;
+					newestIncrementalCheckpoint = child;
+				}
+			}
+		}
+		assert newestIncrementalCheckpoint != null;
+
+		System.out.println("Loading checkpoint " + newestIncrementalCheckpoint.getPath());
+		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		try {
+			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		// Read savepointPath and send it as a byte array
+		// LoadQueryState() will write the array to file and restore it
+		byte[] snapshot = null;
+		System.out.println("Moving query state from savepoint " + savepointPath);
+		File file = new File(zipPath);
+		while (!file.exists()) {
+			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
+			try {
+				System.out.println("Waiting for savepoint file (canonical) " + file.getCanonicalPath() + " to be created");
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			System.out.println("Waiting for savepoint file (absolute) " + file.getAbsolutePath() + " to be created");
+		}
+		try {
+			snapshot = FileUtils.readFileToByteArray(file);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		byte[] finalSnapshot = snapshot;
+		new Thread(() -> {
+			// Begin to set up state transfer connection
+			while (!sentFirstZip.get()) {
+				Thread.yield();
+			}
+			System.out.println("New host: " + new_host);
+			try {
+				System.out.println("Sending mutable state with " + finalSnapshot.length + " bytes");
+				dos.get().writeInt(finalSnapshot.length);
+				System.out.println("Sent length of mutable state");
+				dos.get().write(finalSnapshot);
+				System.out.println("Sent mutable state");
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			// Now we have sent the snapshot to the new host
+			// The new host will receive in the task how many bytes it must receive on its socket
+		}).start();
+		// TODO: END OF SENDING FINAL CHECKPOINT
+		return "Success";
+	}
+
+	public String LoadQueryState(Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds) {
+		System.out.println("Time at receiving state: " + System.currentTimeMillis());
+		long ms_start = System.currentTimeMillis();
+		this.queryIdToMapQuery = queryIdToMapQuery;
+		this.queryIdToStreamIdToNodeIds = queryIdToStreamIdToNodeIds;
+		// Write snapshot to savepoints/received_savepoints/savepointName
+		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName;
+		String zippedSavepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
+		File zip = new File(zippedSavepointPath);
+		zip.delete();
+
+		Socket client_socket;
+		DataInputStream dis = null;
+		int snapshot_length;
+		int snapshot2_length;
+		try {
+			client_socket = state_transfer_server.accept();
+			dis = new DataInputStream(client_socket.getInputStream());
+			snapshot_length = dis.readInt();
+			byte[] snapshot = new byte[snapshot_length];
+			System.out.println("Received query state with " + snapshot_length + " bytes");
+			dis.readFully(snapshot);
+			FileUtils.writeByteArrayToFile(zip, snapshot);
+			while (!zip.exists()) {
+				Thread.yield();
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(103);
+		}
+		System.out.println("Received immutable state");
+
+		String[] savepointParentPathArray = savepointPath.split("/");
+		savepointParentPathArray[savepointParentPathArray.length-1] = "";
+		String savepointParentPath = String.join("/", savepointParentPathArray);
+		try {
+			UnzipFile.unzip(zippedSavepointPath, savepointParentPath);
+			zip.delete();
+			snapshot2_length = dis.readInt();
+			byte[] snapshot2 = new byte[snapshot2_length];
+			System.out.println("Received query state with " + snapshot2_length + " bytes");
+			dis.readFully(snapshot2);
+			FileUtils.writeByteArrayToFile(zip, snapshot2);
+			while (!zip.exists()) {
+				Thread.yield();
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+			System.exit(103);
+		}
+
+		System.out.println("Received mutable state");
+		while (!zip.exists()) {
+			try {
+				zip.createNewFile();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+		}
+
+		// The difference between Zip 1 and 2 is that we place the contents of the second zip
+		// within the first unzipped folder
+		String[] savepointParentPathArray2 = savepointPath.split("/");
+		String savepointParentPath2 = String.join("/", savepointParentPathArray2);
+		try {
+			UnzipFile.unzip(zippedSavepointPath, savepointParentPath2);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+
+		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
+		File newestIncrementalCheckpoint = null;
+		int maxCheckpointNumber = 0;
+		for (File child : new File(savepointPath).listFiles()) {
+			if (child.getName().startsWith("chk-")) {
+				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
+				if (checkpointNumber > maxCheckpointNumber) {
+					maxCheckpointNumber = checkpointNumber;
+					newestIncrementalCheckpoint = child;
+				}
+			}
+		}
+		assert newestIncrementalCheckpoint != null;
+		savepointPath = newestIncrementalCheckpoint.getPath();
+
+		System.out.println("Restoring query state from savepoint " + savepointPath);
+		// Restore the snapshot
+		savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, false);
+		for (Map<String, Object> map_query : queryIdToMapQuery.values()) {
+			DeployQueries(map_query);
+		}
+		StopRuntimeEnv();
+		env.setSavepointRestoreSettings(savepointRestoreSettings);
+		DoStartRuntimeEnv();
+		long ms_stop1 = System.currentTimeMillis();
+		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
+			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
+		}
+		long ms_stop2 = System.currentTimeMillis();
+		System.out.println("Loading the state took " + (ms_stop1 - ms_start) + " ms, and in addition to resuming the streams took " + (ms_stop2 - ms_start) + " ms");
+		return "Success";
 	}
 
 	@Override
@@ -1705,12 +1991,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		switch (cmd) {
 			case "loadQueryState": {
 				List<Object> args = (List<Object>) task.get("arguments");
-				int snapshot_length = (int) args.get(0);
-				int snapshot2_length = (int) args.get(1);
-				Map<Integer, Map<String, Object>> queryIdToMapQuery = (Map<Integer, Map<String, Object>>) args.get(2);
-				String savepointFileName = (String) args.get(3);
-				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(4);
-				LoadQueryState(snapshot_length, snapshot2_length, queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
+				Map<Integer, Map<String, Object>> queryIdToMapQuery = (Map<Integer, Map<String, Object>>) args.get(0);
+				String savepointFileName = (String) args.get(1);
+				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(2);
+				LoadQueryState(queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
 				break;
 			} default:
 				throw new RuntimeException("Invalid task from mediator: " + cmd);
