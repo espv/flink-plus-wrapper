@@ -719,7 +719,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	public String AddTuples(Map<String, Object> tuple, int quantity) {
-		RandomString rs = new RandomString(1024);
 		int stream_id = (int) tuple.get("stream-id");
 		ArrayList<Map<String, Object> > attributes = (ArrayList<Map<String, Object> >) tuple.get("attributes");
 		Row new_tuple = new Row(attributes.size());
@@ -890,6 +889,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			//KafkaFetcher.receivedTuples = 0;
 			timeLastRecvdTuple = 0;
 			receivedTuples = 0;
+			produced = 0;
 			System.out.println("Starting runtime");
 			try {
 				env.execute();
@@ -1476,7 +1476,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 
 		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		File checkpointDirectoryFile = new File(checkpointDirectory);
 		try {
+			while (checkpointDirectoryFile.lastModified() > System.currentTimeMillis() + 100) {
+				Thread.yield();
+			}
 			ZipDirectory.zipDirectory(savepointPath, zipPath);
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -1609,6 +1613,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		System.out.println("Loading checkpoint " + newestIncrementalCheckpoint.getPath());
 		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+
+		while (newestIncrementalCheckpoint.lastModified() > System.currentTimeMillis() + 100) {
+			Thread.yield();
+		}
 		try {
 			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);
 		} catch (IOException e) {
@@ -1678,7 +1686,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			dis = new DataInputStream(client_socket.getInputStream());
 			snapshot_length = dis.readInt();
 			byte[] snapshot = new byte[snapshot_length];
-			System.out.println("Received query state with " + snapshot_length + " bytes");
+			System.out.println("Received immutable state with " + snapshot_length + " bytes");
 			dis.readFully(snapshot);
 			FileUtils.writeByteArrayToFile(zip, snapshot);
 			while (!zip.exists()) {
@@ -1698,7 +1706,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			zip.delete();
 			snapshot2_length = dis.readInt();
 			byte[] snapshot2 = new byte[snapshot2_length];
-			System.out.println("Received query state with " + snapshot2_length + " bytes");
+			System.out.println("Received mutable state with " + snapshot2_length + " bytes");
 			dis.readFully(snapshot2);
 			FileUtils.writeByteArrayToFile(zip, snapshot2);
 			while (!zip.exists()) {

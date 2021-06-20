@@ -449,6 +449,7 @@ public class CheckpointCoordinator {
 	 * @return <code>true</code> if triggering the checkpoint succeeded.
 	 */
 	public boolean triggerCheckpoint(long timestamp, boolean isPeriodic) {
+		checkpointInProgress = true;
 		try {
 			triggerCheckpoint(timestamp, checkpointProperties, null, isPeriodic, false);
 			return true;
@@ -456,6 +457,7 @@ public class CheckpointCoordinator {
 			long latestGeneratedCheckpointId = getCheckpointIdCounter().get();
 			// here we can not get the failed pending checkpoint's id,
 			// so we pass the negative latest generated checkpoint id as a special flag
+			checkpointInProgress = false;
 			failureManager.handleJobLevelCheckpointException(e, -1 * latestGeneratedCheckpointId);
 			return false;
 		}
@@ -877,6 +879,7 @@ public class CheckpointCoordinator {
 		// record the time when this was completed, to calculate
 		// the 'min delay between checkpoints'
 		lastCheckpointCompletionNanos = System.nanoTime();
+		checkpointInProgress = false;
 
 		LOG.info("Completed checkpoint {} for job {} ({} bytes in {} ms).", checkpointId, job,
 			completedCheckpoint.getStateSize(), completedCheckpoint.getDuration());
@@ -1302,13 +1305,13 @@ public class CheckpointCoordinator {
 		WatchKey key = watchService.take();
 		System.out.println("Migration in progress? Key: " + key);
 		System.out.println("Triggering migration");
-		long nanosBeforeCheckpoint = System.nanoTime();
 		migrationInProgress = true;
 
 		// first means we still haven't started the final checkpoint before migration
 		// pendingCheckpoints not being empty means we still have checkpoints in progress
-		while (first || !pendingCheckpoints.isEmpty()) {
-			//System.out.println(first + "-" + !pendingCheckpoints.isEmpty() + "-" + (nanosBeforeCheckpoint > lastCheckpointCompletionNanos));
+		while (first || this.checkpointInProgress) {
+			Thread.sleep(1000);
+			System.out.println(first + "-" + checkpointInProgress);
 			Thread.yield();
 		}
 		new File("/tmp/expose-flink-checkpoints-done/" + this.job).createNewFile();
@@ -1322,13 +1325,13 @@ public class CheckpointCoordinator {
 
 		key = watchService.take();
 		System.out.println("Now triggering the last checkpoint. Key: " + key);
-		nanosBeforeCheckpoint = System.nanoTime();
 		waitingForFinalCheckpoint = true;
 
 		// !createdFinalCheckpoint means we still haven't run the function to create the final checkpoint
 		// pendingCheckpoints not being empty means we still have checkpoints in progress
-		while (!createdFinalCheckpoint || !pendingCheckpoints.isEmpty()) {
-			//System.out.println(!createdFinalCheckpoint + "-" + !pendingCheckpoints.isEmpty() + "-" + (nanosBeforeCheckpoint > lastCheckpointCompletionNanos));
+		while (!createdFinalCheckpoint || this.checkpointInProgress) {
+			Thread.sleep(1000);
+			System.out.println(createdFinalCheckpoint + "-" + checkpointInProgress);
 			Thread.yield();
 		}
 		new File("/tmp/expose-flink-checkpoints-done2/" + this.job).createNewFile();
@@ -1339,6 +1342,7 @@ public class CheckpointCoordinator {
 
 	public boolean forceExclusiveFlag = false;
 	public boolean migrationInProgress = false;
+	public boolean checkpointInProgress = false;
 	public boolean waitingForFinalCheckpoint = false;
 	public boolean createdFinalCheckpoint = false;
 	boolean checkpointing_enabled = true;
@@ -1356,11 +1360,13 @@ public class CheckpointCoordinator {
 					System.out.println("Triggering final checkpoint before migration");
 					triggerCheckpoint(System.currentTimeMillis(), false);
 					first = false;
+					return;
 				}
 				if (waitingForFinalCheckpoint && !createdFinalCheckpoint) {
 					forceExclusiveFlag = true;
-					triggerCheckpoint(System.currentTimeMillis(), true);
+					triggerCheckpoint(System.currentTimeMillis(), false);
 					createdFinalCheckpoint = true;
+					return;
 				}
 				return;
 			}
