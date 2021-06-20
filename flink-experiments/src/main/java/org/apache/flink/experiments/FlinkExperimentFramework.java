@@ -18,7 +18,6 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
-import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
@@ -1148,8 +1147,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// LoadQueryState() will write the array to file and restore it
 		byte[] snapshot = null;
 		System.out.println("Moving query state from savepoint " + savepointPath);
-		String[] path = savepointPath.split("/");
-		String parentFolderName = path[path.length-1];
 		File file = new File(zipPath);
 		while (!file.exists()) {
 			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
@@ -1239,8 +1236,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// LoadQueryState() will write the array to file and restore it
 		snapshot = null;
 		System.out.println("Moving query state from savepoint " + savepointPath);
-		path = savepointPath.split("/");
-		parentFolderName = path[path.length-1];
+		String[] path = savepointPath.split("/");
+		String parentFolderName = path[path.length-1];
 		file = new File(zipPath);
 		while (!file.exists()) {
 			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
@@ -1530,6 +1527,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				System.exit(101);
 			}
 			try {
+				System.out.println("First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
+				dos.get().writeInt(savepointPath.length());
+				dos.get().writeChars(savepointPath);
 				System.out.println("Sending immutable state with " + finalSnapshot.length + " bytes");
 				dos.get().writeInt(finalSnapshot.length);
 				System.out.println("Sent length of immutable state");
@@ -1561,6 +1561,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task2.put("task", "setRestartTimestamp");
 		task2.put("node", Collections.singletonList(new_host));
 		speComm.speNodeComm.SendToSpe(task2);
+		while (!sentFirstZip.get()) {
+			Thread.yield();
+		}
 		long ms_stop2 = System.currentTimeMillis();
 		System.out.println("Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
 		return "Success";
@@ -1569,6 +1572,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String MoveDynamicQueryState(int query_id, int new_host) {
 		File lockFile2;
+		long ms_start = System.currentTimeMillis();
 		String checkpointDirectory = null;
 		try {
 			while (env.getMiniCluster().listJobs().get().size() == 0) {
@@ -1650,6 +1654,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 
 		byte[] finalSnapshot = snapshot;
+		AtomicBoolean sentSecondZip = new AtomicBoolean(false);
 		new Thread(() -> {
 			// Begin to set up state transfer connection
 			while (!sentFirstZip.get()) {
@@ -1667,8 +1672,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			// Now we have sent the snapshot to the new host
 			// The new host will receive in the task how many bytes it must receive on its socket
+			sentSecondZip.set(true);
 		}).start();
 		// TODO: END OF SENDING FINAL CHECKPOINT
+		while (!sentSecondZip.get()) {
+			Thread.yield();
+		}
+		long ms_stop = System.currentTimeMillis();
+		System.out.println("Sending dynamic state took " + (ms_stop-ms_start) + " ms");
 		return "Success";
 	}
 
@@ -1692,9 +1703,18 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		DataInputStream dis = null;
 		int snapshot_length;
 		int snapshot2_length;
+		String sourceSavepointPath = null;
 		try {
 			client_socket = state_transfer_server.accept();
 			dis = new DataInputStream(client_socket.getInputStream());
+			int sourceSavepointPathLength = dis.readInt();
+			System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
+			char[] sourceSavepointPathArray = new char[sourceSavepointPathLength];
+			for (int i = 0; i < sourceSavepointPathLength; i++) {
+				sourceSavepointPathArray[i] = dis.readChar();
+			}
+			sourceSavepointPath = String.valueOf(sourceSavepointPathArray);
+			System.out.println("sourceSavepoint: " + sourceSavepointPath);
 			snapshot_length = dis.readInt();
 			byte[] snapshot = new byte[snapshot_length];
 			System.out.println("Received immutable state with " + snapshot_length + " bytes");
@@ -1746,6 +1766,20 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			UnzipFile.unzip(zippedSavepointPath, savepointParentPath2);
 		} catch (IOException e) {
 			e.printStackTrace();
+		}
+
+		// Search and replace all occurrences of the sourceSavepointPath in the savepointPath with savepointPath
+		String command = "find " + savepointPath + " -type f -print0 | xargs -0 sed -i 's:" + sourceSavepointPath + ":" + savepointPath + ":g'";
+		System.out.println("Running " + command);
+		ProcessBuilder pb = new ProcessBuilder(command.split(" "));
+		pb.redirectErrorStream(true);
+		Process process;
+		try {
+			process = pb.start();
+			process.waitFor();
+		} catch (IOException | InterruptedException e) {
+			e.printStackTrace();
+			System.exit(1022);
 		}
 
 		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
