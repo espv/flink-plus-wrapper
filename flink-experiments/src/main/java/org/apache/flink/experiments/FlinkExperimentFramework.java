@@ -975,9 +975,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Tuple2<Integer, Row> tuple = all_tuples.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
-			if (stream_id == 2) {
+			/*if (stream_id == 2) {
 				row.setField(1, rs.nextString());
-			}
+			}*/
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
 			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
