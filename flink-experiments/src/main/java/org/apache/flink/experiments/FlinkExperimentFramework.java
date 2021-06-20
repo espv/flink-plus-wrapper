@@ -136,7 +136,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
-		timestampForKafkaConsumer = System.currentTimeMillis();
 	}
 
 	public void setupStateTransferServer(int state_transfer_port) {
@@ -278,7 +277,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		String topic = stream_name + "-" + FlinkExperimentFramework.nodeId;
 		//System.out.println("Subscribing to kafka topic " + topic);
 		FlinkKafkaConsumer<Row> consumer = new FlinkKafkaConsumer<>(topic, streamIdToSerializationSchema.get(stream_id), this.props);
-		if (timestampForKafkaConsumer != 0) {
+		if (timestampForKafkaConsumer == 0) {
+			consumer.setStartFromTimestamp(System.currentTimeMillis());
+		} else {
 			consumer.setStartFromTimestamp(timestampForKafkaConsumer);
 		}
 		DataStream<Row> ds = env.addSource(consumer).uid("stream-" + stream_id).returns(streamIdToTypeInfo.get(stream_id));
@@ -293,7 +294,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				// We only log once every maximum one second, to avoid too many tracepoints
 				if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
 					LOG.info("Received tuple {}", cnt[0]);
-					System.out.println("Received tuple " + cnt[0] + ": " + value);
+					System.out.println("Received tuple " + cnt[0] + ": " + value + " at " + System.currentTimeMillis());
 					timeLastRecvdTuple = newTime;
 				}
 			}
@@ -916,7 +917,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String StopRuntimeEnv() {
 		tf.traceEvent(101);
-		timestampForKafkaConsumer = System.currentTimeMillis();
 
 		interrupted = true;
 		threadRunningEnvironment.interrupt();
@@ -975,9 +975,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Tuple2<Integer, Row> tuple = all_tuples.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
-			/*if (stream_id == 2) {
+			if (stream_id == 2) {
 				row.setField(1, rs.nextString());
-			}*/
+			}
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
 			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
@@ -1555,6 +1555,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		long ms_stop1 = System.currentTimeMillis();
 		System.out.println("Time at sending state: " + System.currentTimeMillis());
 		new Thread(() -> speComm.speNodeComm.SendToSpe(task)).start();
+
+		// Send SetRestartTimestamp task before serializing the dynamic state
+		Map<String, Object> task2 = new HashMap<>();
+		task2.put("task", "setRestartTimestamp");
+		task2.put("node", Collections.singletonList(new_host));
+		speComm.speNodeComm.SendToSpe(task2);
 		long ms_stop2 = System.currentTimeMillis();
 		System.out.println("Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
 		return "Success";
@@ -1666,6 +1672,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
+	public String SetRestartTimestamp() {
+		this.timestampForKafkaConsumer = System.currentTimeMillis();
+		return "Success";
+	}
+
 	public String LoadQueryState(Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds) {
 		System.out.println("Time at receiving state: " + System.currentTimeMillis());
 		long ms_start = System.currentTimeMillis();
@@ -1701,6 +1712,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		String[] savepointParentPathArray = savepointPath.split("/");
 		savepointParentPathArray[savepointParentPathArray.length-1] = "";
 		String savepointParentPath = String.join("/", savepointParentPathArray);
+		long ms_stop_immutable = System.currentTimeMillis();
 		try {
 			UnzipFile.unzip(zippedSavepointPath, savepointParentPath);
 			zip.delete();
@@ -1764,8 +1776,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
 			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 		}
-		long ms_stop2 = System.currentTimeMillis();
-		System.out.println("Loading the state took " + (ms_stop1 - ms_start) + " ms, and in addition to resuming the streams took " + (ms_stop2 - ms_start) + " ms");
+		System.out.println("Receiving and loading the immutable state took " + (ms_stop_immutable - ms_start) + " ms");
+		System.out.println("Receiving and loading the mutable state took " + (ms_stop1 - ms_stop_immutable) + " ms");
 		return "Success";
 	}
 
@@ -1973,6 +1985,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			AddKafkaConsumer(schema);
 		}
+		this.timestampForKafkaConsumer = 0;
 		return "Success";
 	}
 
@@ -2004,8 +2017,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(2);
 				LoadQueryState(queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
 				break;
-			} default:
+			} case "setRestartTimestamp": {
+				SetRestartTimestamp();
+				break;
+			} default: {
 				throw new RuntimeException("Invalid task from mediator: " + cmd);
+			}
 		}
 	}
 }
