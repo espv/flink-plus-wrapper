@@ -18,6 +18,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
+import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
@@ -135,6 +136,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
+		new File("/tmp/expose-flink-migration-in-progress").mkdir();
+		new File("/tmp/expose-flink-checkpoints-done").mkdir();
+		new File("/tmp/expose-flink-waiting-for-final-checkpoint").mkdir();
 	}
 
 	public void setupStateTransferServer(int state_transfer_port) {
@@ -738,7 +742,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, true);
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
 			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
 			env.setStateBackend(rocksdb);
 		} catch (IOException e) {
@@ -926,7 +930,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
 		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, true);
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
 			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
 			env.setStateBackend(rocksdb);
 		} catch (IOException e) {
@@ -1101,7 +1105,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
 
-			new File("/tmp/expose-flink-migration-in-progress").mkdir();
 			lockFile = new File("/tmp/expose-flink-migration-in-progress/" + jobID);
 			try {
 				lockFile.createNewFile();
@@ -1196,7 +1199,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 		}
-		new File("/tmp/expose-flink-waiting-for-final-checkpoint").mkdir();
 		lockFile2 = new File("/tmp/expose-flink-waiting-for-final-checkpoint/" + jobID);
 		try {
 			lockFile2.createNewFile();
@@ -1430,12 +1432,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	AtomicReference<DataOutputStream> dos = new AtomicReference<>();
 
 	AtomicBoolean sentFirstZip = new AtomicBoolean(false);
+
+	boolean staticQueryFirst = true;
+
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
+		if (staticQueryFirst && !CheckpointCoordinator.incrementalCheckpointing) {
+			staticQueryFirst = false;
+			return "Not doing it first time";
+		}
 		File lockFile;
-		new File("/tmp/expose-flink-checkpoints-done").mkdir();
-		new File("/tmp/expose-flink-checkpoints-done2").mkdir();
-		new File("/tmp/expose-flink-waiting-for-final-checkpoint").mkdir();
 		String checkpointDirectory = null;
 		long ms_start = System.currentTimeMillis();
 		try {
@@ -1444,7 +1450,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
 
-			new File("/tmp/expose-flink-migration-in-progress").mkdir();
 			lockFile = new File("/tmp/expose-flink-migration-in-progress/" + jobID);
 			try {
 				lockFile.createNewFile();
@@ -1598,13 +1603,21 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			e.printStackTrace();
 		}
 
+		if (!CheckpointCoordinator.incrementalCheckpointing) {
+			System.out.println("Created file " + lockFile2.getAbsolutePath());
+			MoveStaticQueryState(query_id, new_host);
+			return "Success";
+		}
+
 		// Now we wait until the checkpoint is done
+		System.out.println("Waiting until checkpoint is done");
 		try {
-			watchMigrationFile("checkpoints-done2");
+			watchMigrationFile("checkpoints-done");
 		} catch (IOException | InterruptedException e) {
 			e.printStackTrace();
 			System.exit(59);
 		}
+		System.out.println("Checkpoint is done");
 
 		// TODO: SEND FINAL CHECKPOINT
 		// TODO: SEND THE FINAL INCREMENTAL CHECKPOINT
@@ -1729,43 +1742,49 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 		System.out.println("Received immutable state");
 
-		String[] savepointParentPathArray = savepointPath.split("/");
-		savepointParentPathArray[savepointParentPathArray.length-1] = "";
-		String savepointParentPath = String.join("/", savepointParentPathArray);
 		long ms_stop_immutable = System.currentTimeMillis();
+		String[] savepointParentPathArray = savepointPath.split("/");
+		savepointParentPathArray[savepointParentPathArray.length - 1] = "";
+		String savepointParentPath = String.join("/", savepointParentPathArray);
 		try {
 			UnzipFile.unzip(zippedSavepointPath, savepointParentPath);
 			zip.delete();
-			snapshot2_length = dis.readInt();
-			byte[] snapshot2 = new byte[snapshot2_length];
-			System.out.println("Received mutable state with " + snapshot2_length + " bytes");
-			dis.readFully(snapshot2);
-			FileUtils.writeByteArrayToFile(zip, snapshot2);
-			while (!zip.exists()) {
-				Thread.yield();
-			}
 		} catch (IOException e) {
 			e.printStackTrace();
 			System.exit(103);
 		}
 
-		System.out.println("Received mutable state");
-		while (!zip.exists()) {
+		if (CheckpointCoordinator.incrementalCheckpointing) {
 			try {
-				zip.createNewFile();
+				snapshot2_length = dis.readInt();
+				byte[] snapshot2 = new byte[snapshot2_length];
+				System.out.println("Received mutable state with " + snapshot2_length + " bytes");
+				dis.readFully(snapshot2);
+				FileUtils.writeByteArrayToFile(zip, snapshot2);
+				while (!zip.exists()) {
+					Thread.yield();
+				}
+			} catch (IOException e) {
+				e.printStackTrace();
+				System.exit(103);
+			}
+
+			System.out.println("Received mutable state");
+			while (!zip.exists()) {
+				try {
+					zip.createNewFile();
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			}
+
+			// The difference between Zip 1 and 2 is that we place the contents of the second zip
+			// within the first unzipped folder
+			try {
+				UnzipFile.unzip(zippedSavepointPath, savepointPath);
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
-		}
-
-		// The difference between Zip 1 and 2 is that we place the contents of the second zip
-		// within the first unzipped folder
-		String[] savepointParentPathArray2 = savepointPath.split("/");
-		String savepointParentPath2 = String.join("/", savepointParentPathArray2);
-		try {
-			UnzipFile.unzip(zippedSavepointPath, savepointParentPath2);
-		} catch (IOException e) {
-			e.printStackTrace();
 		}
 
 		// Search and replace all occurrences of the sourceSavepointPath in the savepointPath with savepointPath

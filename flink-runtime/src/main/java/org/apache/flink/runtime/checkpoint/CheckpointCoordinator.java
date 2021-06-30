@@ -1291,39 +1291,46 @@ public class CheckpointCoordinator {
 		}
 	}
 
+	public static boolean incrementalCheckpointing = false;
+	int cnt = 1;
 	public void watchMigrationFile() throws IOException, InterruptedException {
 		System.out.println("Starting watchMigrationFile");
-		WatchService watchService
-				= FileSystems.getDefault().newWatchService();
 
-		java.nio.file.Path path = Paths.get("/tmp/expose-flink-migration-in-progress");
+		if (incrementalCheckpointing) {
+			WatchService watchService = FileSystems.getDefault().newWatchService();
 
+			java.nio.file.Path path = Paths.get("/tmp/expose-flink-migration-in-progress");
+
+			path.register(
+					watchService,
+					StandardWatchEventKinds.ENTRY_CREATE);
+			WatchKey key = watchService.take();
+			System.out.println("Migration in progress? Key: " + key);
+			System.out.println("Triggering migration");
+			migrationInProgress = true;
+
+			// first means we still haven't started the final checkpoint before migration
+			// pendingCheckpoints not being empty means we still have checkpoints in progress
+			while ((first || this.checkpointInProgress)) {
+				Thread.sleep(1000);
+				System.out.println(first + "-" + checkpointInProgress);
+				Thread.yield();
+			}
+			System.out.println("Now triggering the last checkpoint2. Key: " + key);
+			new File("/tmp/expose-flink-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
+		}
+		migrationInProgress = true;
+
+		//System.out.println("Now triggering the last checkpoint3. Key: " + key);
+		WatchService watchService = FileSystems.getDefault().newWatchService();
+
+		System.out.println("Waiting for file in " + "/tmp/expose-flink-waiting-for-final-checkpoint");
+		java.nio.file.Path path = Paths.get("/tmp/expose-flink-waiting-for-final-checkpoint");
 		path.register(
 				watchService,
 				StandardWatchEventKinds.ENTRY_CREATE);
 
 		WatchKey key = watchService.take();
-		System.out.println("Migration in progress? Key: " + key);
-		System.out.println("Triggering migration");
-		migrationInProgress = true;
-
-		// first means we still haven't started the final checkpoint before migration
-		// pendingCheckpoints not being empty means we still have checkpoints in progress
-		while (first || this.checkpointInProgress) {
-			Thread.sleep(1000);
-			System.out.println(first + "-" + checkpointInProgress);
-			Thread.yield();
-		}
-		new File("/tmp/expose-flink-checkpoints-done/" + this.job).createNewFile();
-
-		watchService = FileSystems.getDefault().newWatchService();
-
-		path = Paths.get("/tmp/expose-flink-waiting-for-final-checkpoint");
-		path.register(
-				watchService,
-				StandardWatchEventKinds.ENTRY_CREATE);
-
-		key = watchService.take();
 		System.out.println("Now triggering the last checkpoint. Key: " + key);
 		waitingForFinalCheckpoint = true;
 
@@ -1334,8 +1341,8 @@ public class CheckpointCoordinator {
 			System.out.println(createdFinalCheckpoint + "-" + checkpointInProgress);
 			Thread.yield();
 		}
-		new File("/tmp/expose-flink-checkpoints-done2/" + this.job).createNewFile();
-		System.out.println("Created the file /tmp/expose-flink-checkpoints-done2/" + this.job);
+		new File("/tmp/expose-flink-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
+		System.out.println("Created the file /tmp/expose-flink-checkpoints-done/" + this.job);
 	}
 
 	// ------------------------------------------------------------------------
@@ -1356,13 +1363,14 @@ public class CheckpointCoordinator {
 			}
 			// Return if migration is in progress
 			if (migrationInProgress) {
-				if (first) {
+				if (first && incrementalCheckpointing) {
 					System.out.println("Triggering final checkpoint before migration");
 					triggerCheckpoint(System.currentTimeMillis(), false);
 					first = false;
 					return;
 				}
 				if (waitingForFinalCheckpoint && !createdFinalCheckpoint) {
+					System.out.println("Triggering final incremental checkpoint during migration");
 					forceExclusiveFlag = true;
 					triggerCheckpoint(System.currentTimeMillis(), false);
 					createdFinalCheckpoint = true;
