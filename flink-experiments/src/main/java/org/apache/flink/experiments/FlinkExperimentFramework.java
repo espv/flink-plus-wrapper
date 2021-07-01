@@ -115,7 +115,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	Map<String, FlinkKafkaProducer<Row> > querySinkFunctions = new HashMap<>();
 	//List<SourceFunction<Row> > sourceFunctions = new ArrayList<>();
 	Thread threadRunningEnvironment;
-	static int nodeId;
+	public static int nodeId;
 	Properties props;
 	static Map<Integer, KafkaProducer> nodeIdToKafkaProducer = new HashMap<>();
 	Map<Integer, Properties> nodeIdToProperties = new HashMap<>();
@@ -136,9 +136,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
-		new File("/tmp/expose-flink-migration-in-progress").mkdir();
-		new File("/tmp/expose-flink-checkpoints-done").mkdir();
-		new File("/tmp/expose-flink-waiting-for-final-checkpoint").mkdir();
 	}
 
 	public void setupStateTransferServer(int state_transfer_port) {
@@ -157,6 +154,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		FlinkExperimentFramework.nodeId = nodeId;
 		props.put("client.id", Integer.toString(nodeId));
 		producer = new KafkaProducer<>(props);
+		CheckpointCoordinator.nodeId = nodeId;
+		new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress").mkdir();
+		new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done").mkdir();
+		new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint").mkdir();
 	}
 
 	public void SetTraceOutputFolder(String f) {this.trace_output_folder = f;}
@@ -1105,7 +1106,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
 
-			lockFile = new File("/tmp/expose-flink-migration-in-progress/" + jobID);
+			lockFile = new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress/" + jobID);
 			try {
 				lockFile.createNewFile();
 			} catch (IOException e) {
@@ -1199,7 +1200,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 		}
-		lockFile2 = new File("/tmp/expose-flink-waiting-for-final-checkpoint/" + jobID);
+		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + jobID);
 		try {
 			lockFile2.createNewFile();
 		} catch (IOException e) {
@@ -1420,7 +1421,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		WatchService watchService
 				= FileSystems.getDefault().newWatchService();
 
-		java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + name);
+		java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-" + name);
 
 		path.register(
 				watchService,
@@ -1437,10 +1438,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
-		if (staticQueryFirst && !CheckpointCoordinator.incrementalCheckpointing) {
-			staticQueryFirst = false;
-			return "Not doing it first time";
+		if (CheckpointCoordinator.incrementalCheckpointing) {
+			return DoMoveStaticQueryState(query_id, new_host);
+		} else {
+			return "Immutable state migration is disabled if incremental checkpointing is disabled";
 		}
+	}
+
+	public String DoMoveStaticQueryState(int query_id, int new_host) {
 		File lockFile;
 		String checkpointDirectory = null;
 		long ms_start = System.currentTimeMillis();
@@ -1450,7 +1455,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			}
 			jobID = env.getMiniCluster().listJobs().get().iterator().next().getJobId();
 
-			lockFile = new File("/tmp/expose-flink-migration-in-progress/" + jobID);
+			lockFile = new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress/" + jobID);
 			try {
 				lockFile.createNewFile();
 			} catch (IOException e) {
@@ -1479,8 +1484,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 		File checkpointDirectoryFile = new File(checkpointDirectory);
+
 		try {
-			while (checkpointDirectoryFile.lastModified() > System.currentTimeMillis() + 100) {
+			while (checkpointDirectoryFile.lastModified() > System.currentTimeMillis() - 10) {
 				Thread.yield();
 			}
 			ZipDirectory.zipDirectory(savepointPath, zipPath);
@@ -1596,7 +1602,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			System.exit(31);
 		}
 
-		lockFile2 = new File("/tmp/expose-flink-waiting-for-final-checkpoint/" + jobID);
+		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + jobID);
 		try {
 			lockFile2.createNewFile();
 		} catch (IOException e) {
@@ -1605,7 +1611,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		if (!CheckpointCoordinator.incrementalCheckpointing) {
 			System.out.println("Created file " + lockFile2.getAbsolutePath());
-			MoveStaticQueryState(query_id, new_host);
+			DoMoveStaticQueryState(query_id, new_host);
 			return "Success";
 		}
 
@@ -1637,8 +1643,15 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Loading checkpoint " + newestIncrementalCheckpoint.getPath());
 		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 
-		while (newestIncrementalCheckpoint.lastModified() > System.currentTimeMillis() + 100) {
-			Thread.yield();
+		//File metafile = new File(newestIncrementalCheckpoint.getAbsolutePath() + "/_metadata");
+
+		try {
+			while (newestIncrementalCheckpoint.lastModified() > System.currentTimeMillis() - 10) {
+				Thread.yield();
+			}
+			ZipDirectory.zipDirectory(savepointPath, zipPath);
+		} catch (IOException e) {
+			e.printStackTrace();
 		}
 		try {
 			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);

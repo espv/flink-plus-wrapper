@@ -1293,13 +1293,17 @@ public class CheckpointCoordinator {
 
 	public static boolean incrementalCheckpointing = false;
 	int cnt = 1;
+	public static int nodeId = -1;
 	public void watchMigrationFile() throws IOException, InterruptedException {
 		System.out.println("Starting watchMigrationFile");
+		while (nodeId == -1) {
+			Thread.yield();
+		}
 
 		if (incrementalCheckpointing) {
 			WatchService watchService = FileSystems.getDefault().newWatchService();
 
-			java.nio.file.Path path = Paths.get("/tmp/expose-flink-migration-in-progress");
+			java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-migration-in-progress");
 
 			path.register(
 					watchService,
@@ -1317,15 +1321,15 @@ public class CheckpointCoordinator {
 				Thread.yield();
 			}
 			System.out.println("Now triggering the last checkpoint2. Key: " + key);
-			new File("/tmp/expose-flink-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
+			new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
 		}
 		migrationInProgress = true;
 
 		//System.out.println("Now triggering the last checkpoint3. Key: " + key);
 		WatchService watchService = FileSystems.getDefault().newWatchService();
 
-		System.out.println("Waiting for file in " + "/tmp/expose-flink-waiting-for-final-checkpoint");
-		java.nio.file.Path path = Paths.get("/tmp/expose-flink-waiting-for-final-checkpoint");
+		System.out.println("Waiting for file in " + "/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
+		java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
 		path.register(
 				watchService,
 				StandardWatchEventKinds.ENTRY_CREATE);
@@ -1341,8 +1345,8 @@ public class CheckpointCoordinator {
 			System.out.println(createdFinalCheckpoint + "-" + checkpointInProgress);
 			Thread.yield();
 		}
-		new File("/tmp/expose-flink-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
-		System.out.println("Created the file /tmp/expose-flink-checkpoints-done/" + this.job);
+		new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
+		System.out.println("Created the file /tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job);
 	}
 
 	// ------------------------------------------------------------------------
