@@ -813,6 +813,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	static long produced = 0;
+	RandomString rs4 = new RandomString(4);
 	public void DeployQueries() {
 		for (Map<String, Object> query : fetchQueries) {
 			int outputStreamId = (int) query.get("output-stream-id");
@@ -832,7 +833,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				DataStream<Row> ds =
 						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
 								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1)
-								.uid("query-" + query.get("id"));
+								.uid("query-" + query.get("id") + rs4.nextString());
 				class CustomFlatMapFunction implements FlatMapFunction<Row, Object> {
 					public final int outputStreamId;
 					CustomFlatMapFunction(int outputStreamId) {
@@ -1798,20 +1799,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
-		}
-
-		// Search and replace all occurrences of the sourceSavepointPath in the savepointPath with savepointPath
-		String command = "find " + savepointPath + " -type f -print0 | xargs -0 sed -i 's:" + sourceSavepointPath + ":" + savepointPath + ":g'";
-		System.out.println("Running " + command);
-		ProcessBuilder pb = new ProcessBuilder(command.split(" "));
-		pb.redirectErrorStream(true);
-		Process process;
-		try {
-			process = pb.start();
-			process.waitFor();
-		} catch (IOException | InterruptedException e) {
-			e.printStackTrace();
-			System.exit(1022);
 		}
 
 		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint

@@ -1291,7 +1291,7 @@ public class CheckpointCoordinator {
 		}
 	}
 
-	public static boolean incrementalCheckpointing = false;
+	public static boolean incrementalCheckpointing = true;
 	int cnt = 1;
 	public static int nodeId = -1;
 	public void watchMigrationFile() throws IOException, InterruptedException {
