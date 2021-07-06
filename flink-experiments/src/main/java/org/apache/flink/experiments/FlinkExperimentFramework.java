@@ -973,7 +973,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	int tupleCnt = 0;
-	RandomString rs = new RandomString(20000);
+	RandomString rs = new RandomString(1000);
 	public String ProcessTuples(int number_tuples, boolean clear_tuples) {
 		System.out.println("Processing " + number_tuples + ", or more correctly: " + all_tuples.size() + " tuples");
 		for (int i = 0; i < all_tuples.size(); i++) {
@@ -1613,6 +1613,19 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		if (!CheckpointCoordinator.incrementalCheckpointing) {
 			System.out.println(System.currentTimeMillis() + ": Created file " + lockFile2.getAbsolutePath());
 			DoMoveStaticQueryState(query_id, new_host);
+			System.out.println("Forwarding " + incomingTupleBuffer.size() + " tuples to the new host");
+                	for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
+                        	int outputStreamId = outgoing_tuple.f0;
+                        	String outputStreamName = streamIdToName.get(outputStreamId);
+                        	Row row = outgoing_tuple.f1;
+                        	// Send tuple to subscribers
+                        	TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
+                        	for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
+                                	String topic = outputStreamName + "-" + otherNodeId;
+                                	System.out.println("Forwarding buffered tuples to topic " + topic);
+                                	nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+                        	}
+                	}
 			return "Success";
 		}
 
@@ -1709,6 +1722,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Sending dynamic state took " + (ms_stop-ms_start) + " ms");
 
 		// TODO: Hack to forward buffered incoming tuples to the new host
+		System.out.println("Forwarding " + incomingTupleBuffer.size() + " tuples to the new host");
 		for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
 			int outputStreamId = outgoing_tuple.f0;
 			String outputStreamName = streamIdToName.get(outputStreamId);
@@ -1717,6 +1731,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
 			for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
 				String topic = outputStreamName + "-" + otherNodeId;
+				System.out.println("Forwarding buffered tuples to topic " + topic);
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 			}
 		}
