@@ -1857,9 +1857,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			streamIdActive.put(stream_id, true);
 			streamIdBuffer.put(stream_id, false);
 		}
-		return "Success";
+		//return "Success";
 
-		/*for (Tuple2<Integer, Row> incoming_tuple : incomingTupleBuffer) {
+		for (Tuple2<Integer, Row> incoming_tuple : incomingTupleBuffer) {
 			// Send tuple on Kafka topic to myself
 			int outputStreamId = incoming_tuple.f0;
 			String outputStreamName = streamIdToName.get(outputStreamId);
@@ -1880,8 +1880,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				String topic = outputStreamName + "-" + otherNodeId;
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 			}
-		}*/
-		//return "Success";
+		}
+		return "Success";
 	}
 
 	@Override
