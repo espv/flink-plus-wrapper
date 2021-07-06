@@ -1498,7 +1498,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// Read savepointPath and send it as a byte array
 		// LoadQueryState() will write the array to file and restore it
 		byte[] snapshot = null;
-		System.out.println("Moving query state from savepoint " + savepointPath);
+		System.out.println(System.currentTimeMillis() + ": Moving query state from savepoint " + savepointPath);
 		String[] path = savepointPath.split("/");
 		String parentFolderName = path[path.length-1];
 		File file = new File(zipPath);
@@ -1522,7 +1522,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		final byte[] finalSnapshot = snapshot;
 		new Thread(() -> {
 			// Begin to set up state transfer connection
-			System.out.println("New host: " + new_host);
+			System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
 			String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
 			int new_host_state_transfer_port = (int) this.nodeIdToIpAndPort.get(new_host).get("state-transfer-port");
 			Socket clientSocket = null;
@@ -1539,14 +1539,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				System.exit(101);
 			}
 			try {
-				System.out.println("First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
+				System.out.println(System.currentTimeMillis() + ": First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
 				dos.get().writeInt(savepointPath.length());
 				dos.get().writeChars(savepointPath);
-				System.out.println("Sending immutable state with " + finalSnapshot.length + " bytes");
+				System.out.println(System.currentTimeMillis() + ": Sending immutable state with " + finalSnapshot.length + " bytes");
 				dos.get().writeInt(finalSnapshot.length);
-				System.out.println("Sent length of immutable state");
+				System.out.println(System.currentTimeMillis() + ": Sent length of immutable state");
 				dos.get().write(finalSnapshot);
-				System.out.println("Sent immutable state");
+				System.out.println(System.currentTimeMillis() + ": Sent immutable state");
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
@@ -1565,7 +1565,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task.put("arguments", task_args);
 		task.put("node", Collections.singletonList(new_host));
 		long ms_stop1 = System.currentTimeMillis();
-		System.out.println("Time at sending state: " + System.currentTimeMillis());
+		System.out.println(System.currentTimeMillis() + ": Time at sending state: " + System.currentTimeMillis());
 		new Thread(() -> speComm.speNodeComm.SendToSpe(task)).start();
 
 		// Send SetRestartTimestamp task before serializing the dynamic state
@@ -1577,7 +1577,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Thread.yield();
 		}
 		long ms_stop2 = System.currentTimeMillis();
-		System.out.println("Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
+		System.out.println(System.currentTimeMillis() + ": Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
 		return "Success";
 	}
 
@@ -1611,7 +1611,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 
 		if (!CheckpointCoordinator.incrementalCheckpointing) {
-			System.out.println("Created file " + lockFile2.getAbsolutePath());
+			System.out.println(System.currentTimeMillis() + ": Created file " + lockFile2.getAbsolutePath());
 			DoMoveStaticQueryState(query_id, new_host);
 			return "Success";
 		}
