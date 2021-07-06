@@ -1730,16 +1730,21 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		DataInputStream dis = null;
 		int snapshot_length;
 		int snapshot2_length;
-		String sourceSavepointPath = null;
+		String sourceSavepointPath;
+		long ms_start_immutable = 0, ms_stop_immutable = 0;
+		long ms_start_mutable = 0, ms_stop_mutable = 0;
 		try {
 			client_socket = state_transfer_server.accept();
+			ms_start_immutable = System.currentTimeMillis();
 			dis = new DataInputStream(client_socket.getInputStream());
 			int sourceSavepointPathLength = dis.readInt();
-			System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
+			//System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
 			char[] sourceSavepointPathArray = new char[sourceSavepointPathLength];
 			for (int i = 0; i < sourceSavepointPathLength; i++) {
 				sourceSavepointPathArray[i] = dis.readChar();
 			}
+			ms_stop_immutable = System.currentTimeMillis();
+			System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
 			sourceSavepointPath = String.valueOf(sourceSavepointPathArray);
 			System.out.println("sourceSavepoint: " + sourceSavepointPath);
 			snapshot_length = dis.readInt();
@@ -1754,9 +1759,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			e.printStackTrace();
 			System.exit(103);
 		}
+		long ms_immutable_unzipped = System.currentTimeMillis();
 		System.out.println("Received immutable state");
 
-		long ms_stop_immutable = System.currentTimeMillis();
 		String[] savepointParentPathArray = savepointPath.split("/");
 		savepointParentPathArray[savepointParentPathArray.length - 1] = "";
 		String savepointParentPath = String.join("/", savepointParentPathArray);
@@ -1771,10 +1776,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		if (CheckpointCoordinator.incrementalCheckpointing) {
 			try {
 				snapshot2_length = dis.readInt();
+				ms_start_mutable = System.currentTimeMillis();
 				byte[] snapshot2 = new byte[snapshot2_length];
 				System.out.println("Received mutable state with " + snapshot2_length + " bytes");
 				dis.readFully(snapshot2);
 				FileUtils.writeByteArrayToFile(zip, snapshot2);
+				ms_stop_mutable = System.currentTimeMillis();
 				while (!zip.exists()) {
 					Thread.yield();
 				}
@@ -1800,6 +1807,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 			}
 		}
+		long ms_mutable_unzipped = System.currentTimeMillis();
 
 		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
 		File newestIncrementalCheckpoint = null;
@@ -1825,12 +1833,19 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		StopRuntimeEnv();
 		env.setSavepointRestoreSettings(savepointRestoreSettings);
 		DoStartRuntimeEnv();
-		long ms_stop1 = System.currentTimeMillis();
+		long ms_stop = System.currentTimeMillis();
 		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
 			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 		}
-		System.out.println("Receiving and loading the immutable state took " + (ms_stop_immutable - ms_start) + " ms");
-		System.out.println("Receiving and loading the mutable state took " + (ms_stop1 - ms_stop_immutable) + " ms");
+		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable) + " ms");
+		System.out.println("Unzipping immutable state took " + (ms_immutable_unzipped - ms_stop_immutable) + " ms");
+
+		System.out.println("Time between receiving the immutable state and the start of receiving the mutable state " + (ms_start_mutable - ms_immutable_unzipped) + " ms");
+
+		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_start_mutable) + " ms");
+		System.out.println("Unzipping mutable state took " + (ms_mutable_unzipped - ms_stop_mutable) + " ms");
+
+		System.out.println("Loading the checkpoint took " + (ms_stop - ms_mutable_unzipped) + " ms");
 		return "Success";
 	}
 
