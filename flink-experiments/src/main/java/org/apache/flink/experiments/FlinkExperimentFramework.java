@@ -1617,7 +1617,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 
 		// Now we wait until the checkpoint is done
-		System.out.println("Waiting until checkpoint is done");
+		System.out.println(System.currentTimeMillis() + ": Waiting until checkpoint is done. It is at this point that we must stop the SPE");
 		try {
 			watchMigrationFile("checkpoints-done");
 		} catch (IOException | InterruptedException e) {
@@ -1641,7 +1641,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 		assert newestIncrementalCheckpoint != null;
 
-		System.out.println("Loading checkpoint " + newestIncrementalCheckpoint.getPath());
+		System.out.println(System.currentTimeMillis() + ": Loading checkpoint " + newestIncrementalCheckpoint.getPath());
 		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 
 		//File metafile = new File(newestIncrementalCheckpoint.getAbsolutePath() + "/_metadata");
@@ -1663,7 +1663,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// Read savepointPath and send it as a byte array
 		// LoadQueryState() will write the array to file and restore it
 		byte[] snapshot = null;
-		System.out.println("Moving query state from savepoint " + savepointPath);
+		System.out.println(System.currentTimeMillis() + ": Moving query state from savepoint " + savepointPath);
 		File file = new File(zipPath);
 		while (!file.exists()) {
 			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
@@ -1687,13 +1687,13 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			while (!sentFirstZip.get()) {
 				Thread.yield();
 			}
-			System.out.println("New host: " + new_host);
+			System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
 			try {
-				System.out.println("Sending mutable state with " + finalSnapshot.length + " bytes");
+				System.out.println(System.currentTimeMillis() + ": Sending mutable state with " + finalSnapshot.length + " bytes");
 				dos.get().writeInt(finalSnapshot.length);
-				System.out.println("Sent length of mutable state");
+				System.out.println(System.currentTimeMillis() + ": Sent length of mutable state");
 				dos.get().write(finalSnapshot);
-				System.out.println("Sent mutable state");
+				System.out.println(System.currentTimeMillis() + ": Sent mutable state");
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
