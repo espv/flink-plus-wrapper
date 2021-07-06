@@ -1707,6 +1707,19 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 		long ms_stop = System.currentTimeMillis();
 		System.out.println("Sending dynamic state took " + (ms_stop-ms_start) + " ms");
+
+		// TODO: Hack to forward buffered incoming tuples to the new host
+		for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
+			int outputStreamId = outgoing_tuple.f0;
+			String outputStreamName = streamIdToName.get(outputStreamId);
+			Row row = outgoing_tuple.f1;
+			// Send tuple to subscribers
+			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
+			for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
+				String topic = outputStreamName + "-" + otherNodeId;
+				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+			}
+		}
 		return "Success";
 	}
 
