@@ -973,7 +973,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	}
 
 	int tupleCnt = 0;
-	RandomString rs = new RandomString(32);
+	RandomString rs = new RandomString(20000);
 	public String ProcessTuples(int number_tuples, boolean clear_tuples) {
 		System.out.println("Processing " + number_tuples + ", or more correctly: " + all_tuples.size() + " tuples");
 		for (int i = 0; i < all_tuples.size(); i++) {
@@ -1646,14 +1646,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		//File metafile = new File(newestIncrementalCheckpoint.getAbsolutePath() + "/_metadata");
 
-		try {
+		/*try {
 			while (newestIncrementalCheckpoint.lastModified() > System.currentTimeMillis() - 10) {
 				Thread.yield();
 			}
 			ZipDirectory.zipDirectory(savepointPath, zipPath);
 		} catch (IOException e) {
 			e.printStackTrace();
-		}
+		}*/
 		try {
 			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);
 		} catch (IOException e) {
