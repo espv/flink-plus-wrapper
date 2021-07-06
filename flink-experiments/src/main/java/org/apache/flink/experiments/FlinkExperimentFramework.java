@@ -1773,8 +1773,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			System.exit(103);
 		}
 
+		long ms_before_start_mutable = System.currentTimeMillis();
 		if (CheckpointCoordinator.incrementalCheckpointing) {
 			try {
+
 				snapshot2_length = dis.readInt();
 				ms_start_mutable = System.currentTimeMillis();
 				byte[] snapshot2 = new byte[snapshot2_length];
@@ -1840,7 +1842,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable) + " ms");
 		System.out.println("Unzipping immutable state took " + (ms_immutable_unzipped - ms_stop_immutable) + " ms");
 
-		System.out.println("Time between receiving the immutable state and the start of receiving the mutable state " + (ms_start_mutable - ms_immutable_unzipped) + " ms");
+		System.out.println("Time between receiving the immutable state and the start of receiving the mutable state " + (ms_start_mutable - ms_before_start_mutable) + " ms");
 
 		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_start_mutable) + " ms");
 		System.out.println("Unzipping mutable state took " + (ms_mutable_unzipped - ms_stop_mutable) + " ms");
