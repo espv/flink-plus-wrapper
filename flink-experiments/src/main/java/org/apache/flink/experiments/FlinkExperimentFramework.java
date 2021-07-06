@@ -1743,7 +1743,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			for (int i = 0; i < sourceSavepointPathLength; i++) {
 				sourceSavepointPathArray[i] = dis.readChar();
 			}
-			ms_stop_immutable = System.currentTimeMillis();
 			System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
 			sourceSavepointPath = String.valueOf(sourceSavepointPathArray);
 			System.out.println("sourceSavepoint: " + sourceSavepointPath);
@@ -1751,6 +1750,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			byte[] snapshot = new byte[snapshot_length];
 			System.out.println("Received immutable state with " + snapshot_length + " bytes");
 			dis.readFully(snapshot);
+			ms_stop_immutable = System.currentTimeMillis();
 			FileUtils.writeByteArrayToFile(zip, snapshot);
 			while (!zip.exists()) {
 				Thread.yield();
