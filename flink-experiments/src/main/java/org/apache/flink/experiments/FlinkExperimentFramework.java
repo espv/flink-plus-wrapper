@@ -419,11 +419,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			tuples = raw_tuples;
 		}
 
+		for (Map<String, Object> tuple : tuples) {
+			AddTuples(tuple, 1);
+		}
 		for (int i = 0; i < iterations; i++) {
-			for (Map<String, Object> tuple : tuples) {
-				AddTuples(tuple, 1);
-			}
-			ProcessTuples(tuples.size(), true);
+			ProcessTuples(tuples.size(), false);
 		}
 		return "Success";
 	}
