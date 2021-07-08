@@ -336,6 +336,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 						nodeIdToStoppedStreams.put(sending_node_id, new ArrayList<>());
 					}
 					nodeIdToStoppedStreams.get(sending_node_id).addAll(stream_id_list);
+				} else */
+
+				/*if (streamIdToNodeIds.containsKey(stream_id)) {
+					System.out.println("Immediately forwarding received tuple");
+					// TODO: Forward tuples if there are next hops
+					TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
+					for (int otherNodeId : streamIdToNodeIds.get(stream_id)) {
+						String topic = stream_name + "-" + otherNodeId;
+						System.out.println("Forwarding tuples to topic " + topic);
+						nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+					}
 				} else */if (streamIdActive.getOrDefault(stream_id, true)) {
 					out.collect(row);
 				} else if (streamIdBuffer.getOrDefault(stream_id, false)) {
@@ -419,12 +430,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			tuples = raw_tuples;
 		}
 
+		List<Tuple2<Integer, Row>> tuples_to_send = new ArrayList<>();
 		for (Map<String, Object> tuple : tuples) {
-			AddTuples(tuple, 1);
+			AddTuples(tuple, tuples_to_send,1);
 		}
 		for (int i = 0; i < iterations; i++) {
-			ProcessTuples(tuples.size(), false);
+			ProcessTuples(tuples_to_send, false);
 		}
+		System.out.println( System.nanoTime() + ": Sent " + (tupleCnt) + " tuples");
 		return "Success";
 	}
 
@@ -547,7 +560,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				for (int to_node : streamIdToNodeIds.get(stream_id)) {
 					String topicName = stream_name + "-" + to_node;
 					if (++tupleCnt % 100000 == 0) {
-						System.out.println( System.nanoTime() + ": Sending tuple " + (++tupleCnt) + " to node " + to_node + " with topic " + topicName);
+						System.out.println( System.nanoTime() + ": Sending tuple " + tupleCnt + " to node " + to_node + " with topic " + topicName);
 					}
 					int random_number = abs(r.nextInt() % 101);
 					double drop_probability = node_to_drop_probability.get(to_node);
@@ -615,8 +628,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			tuples = raw_tuples;
 		}
 
+		List<Tuple2<Integer, Row>> tuples_to_send = new ArrayList<>();
 		for (Map<String, Object> tuple : tuples) {
-			AddTuples(tuple, 1);
+			AddTuples(tuple, tuples_to_send,1);
 		}
 
 		new Thread(() -> SendTuplesVariableOnOff(desired_tuples_per_second, downtime, min, max, step)).start();
@@ -657,8 +671,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			tuples = raw_tuples;
 		}
 
+		List<Tuple2<Integer, Row>> tuples_to_send = new ArrayList<>();
 		for (Map<String, Object> tuple : tuples) {
-			AddTuples(tuple, 1);
+			AddTuples(tuple, tuples_to_send,1);
 		}
 
 		new Thread(() -> SendTuplesVariableOnOff(desired_tuples_per_second, 0, Integer.MAX_VALUE-1, Integer.MAX_VALUE, 0)).start();
@@ -723,7 +738,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	}
 
-	public String AddTuples(Map<String, Object> tuple, int quantity) {
+	public String AddTuples(Map<String, Object> tuple, List<Tuple2<Integer, Row>> tuple_list, int quantity) {
 		int stream_id = (int) tuple.get("stream-id");
 		ArrayList<Map<String, Object> > attributes = (ArrayList<Map<String, Object> >) tuple.get("attributes");
 		Row new_tuple = new Row(attributes.size());
@@ -732,7 +747,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			new_tuple.setField(i, attribute.get("value"));
 		}
 
-		all_tuples.add(new Tuple2<>(stream_id, new_tuple));
+		tuple_list.add(new Tuple2<>(stream_id, new_tuple));
 		return "Success";
 	}
 
@@ -887,7 +902,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			//	"Stop it with stopRuntimeEnv before running it again.");
 			return "Environment already running";
 		}
-		cnt[0] = 0;
 		DeployQueries();
 		threadRunningEnvironment = new Thread(() -> {
 			//System.out.println("Starting environment");
@@ -896,6 +910,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			timeLastRecvdTuple = 0;
 			receivedTuples = 0;
 			produced = 0;
+			cnt[0] = 0;
 			System.out.println("Starting runtime");
 			try {
 				env.execute();
@@ -974,10 +989,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	int tupleCnt = 0;
 	RandomString rs = new RandomString(1000);
-	public String ProcessTuples(int number_tuples, boolean clear_tuples) {
-		System.out.println("Processing " + number_tuples + ", or more correctly: " + all_tuples.size() + " tuples");
-		for (int i = 0; i < all_tuples.size(); i++) {
-			Tuple2<Integer, Row> tuple = all_tuples.get(i);
+	public String ProcessTuples(List<Tuple2<Integer, Row>> tuples_to_send, boolean clear_tuples) {
+		//System.out.println("Processing " + tuples_to_send.size() + ", or more correctly: " + tuples_to_send.size() + " tuples");
+		for (int i = 0; i < tuples_to_send.size(); i++) {
+			Tuple2<Integer, Row> tuple = tuples_to_send.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
 			if (stream_id == 2) {
@@ -989,7 +1004,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				String topicName = stream_name + "-" + otherNodeId;
 				//for (Row tuple : streamToTuples.get(stream_id)) {
 				if (++tupleCnt % 100000 == 0) {
-					System.out.println( System.nanoTime() + ": Sending tuple " + (++tupleCnt) + " to node " + otherNodeId + " with topic " + topicName + " and IP " + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
+					System.out.println( System.nanoTime() + ": Sending tuple " + tupleCnt + " to node " + otherNodeId + " with topic " + topicName + " and IP " + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
 				}
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, null, null, serializationSchema.serialize(row)));
 				//}
@@ -997,7 +1012,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 
 		if (clear_tuples) {
-			all_tuples.clear();
+			tuples_to_send.clear();
 		}
 		pktsPublished = 0;
 		return "Success";
@@ -1887,6 +1902,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 		//return "Success";
 
+		/*System.out.println("Forwarding " + incomingTupleBuffer.size() + " tuples to myself");
 		for (Tuple2<Integer, Row> incoming_tuple : incomingTupleBuffer) {
 			// Send tuple on Kafka topic to myself
 			int outputStreamId = incoming_tuple.f0;
@@ -1898,6 +1914,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			nodeIdToKafkaProducer.get(nodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 		}
 
+		System.out.println("Forwarding " + outgoingTupleBuffer.size() + " tuples elsewhere");
 		for (Tuple2<Integer, Row> outgoing_tuple : outgoingTupleBuffer) {
 			int outputStreamId = outgoing_tuple.f0;
 			String outputStreamName = streamIdToName.get(outputStreamId);
@@ -1908,7 +1925,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				String topic = outputStreamName + "-" + otherNodeId;
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 			}
-		}
+		}*/
 		return "Success";
 	}
 
