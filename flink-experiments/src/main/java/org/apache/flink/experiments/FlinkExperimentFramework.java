@@ -1454,6 +1454,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
+		// Send SetRestartTimestamp task before serializing the dynamic state
+		Map<String, Object> task2 = new HashMap<>();
+		task2.put("task", "setRestartTimestamp");
+		task2.put("node", Collections.singletonList(new_host));
+		speComm.speNodeComm.SendToSpe(task2);
 		if (CheckpointCoordinator.incrementalCheckpointing) {
 			return DoMoveStaticQueryState(query_id, new_host);
 		} else {
@@ -1582,12 +1587,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		long ms_stop1 = System.currentTimeMillis();
 		System.out.println(System.currentTimeMillis() + ": Time at sending state: " + System.currentTimeMillis());
 		new Thread(() -> speComm.speNodeComm.SendToSpe(task)).start();
-
-		// Send SetRestartTimestamp task before serializing the dynamic state
-		Map<String, Object> task2 = new HashMap<>();
-		task2.put("task", "setRestartTimestamp");
-		task2.put("node", Collections.singletonList(new_host));
-		speComm.speNodeComm.SendToSpe(task2);
 		while (!sentFirstZip.get()) {
 			Thread.yield();
 		}
