@@ -1503,43 +1503,41 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			System.exit(58);
 		}
 
-		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
-		File checkpointDirectoryFile = new File(checkpointDirectory);
-
-		try {
-			while (checkpointDirectoryFile.lastModified() > System.currentTimeMillis() - 10) {
-				Thread.yield();
-			}
-			ZipDirectory.zipDirectory(savepointPath, zipPath);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-
 		// Read savepointPath and send it as a byte array
 		// LoadQueryState() will write the array to file and restore it
-		byte[] snapshot = null;
 		System.out.println(System.currentTimeMillis() + ": Moving query state from savepoint " + savepointPath);
 		String[] path = savepointPath.split("/");
 		String parentFolderName = path[path.length-1];
-		File file = new File(zipPath);
-		while (!file.exists()) {
-			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
-			try {
-				System.out.println("Waiting for savepoint file (canonical) " + file.getCanonicalPath() + " to be created");
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-			System.out.println("Waiting for savepoint file (absolute) " + file.getAbsolutePath() + " to be created");
-		}
-		try {
-			snapshot = FileUtils.readFileToByteArray(file);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-		// Deleting first zip
-		file.delete();
 
-		final byte[] finalSnapshot = snapshot;
+		String finalCheckpointDirectory = checkpointDirectory;
+		List<FileToSend> filesToSend = new ArrayList<>();
+		final int[] filesSent = {0};
+		final int[] filesLoaded = {0};
+		AtomicBoolean loadedAllFiles = new AtomicBoolean(false);
+		new Thread(() -> {
+			File rootFile = new File(finalCheckpointDirectory);
+			for (File directory : rootFile.listFiles()) {
+				assert directory.isDirectory();
+				if (directory.getName().startsWith("chk-")) {
+					// We don't send incremental checkpoints here
+					continue;
+				}
+				for (File file : directory.listFiles()) {
+					assert file.isFile();
+					// This means that we can load 10 more files than we have sent
+					while (filesLoaded[0] > filesSent[0] + 10) {
+						Thread.yield();
+					}
+					FileToSend fts = new FileToSend(file);
+					System.out.println("Loading file " + (filesLoaded[0]+1) + ": " + fts.file.getAbsolutePath());
+					fts.loadFile();
+					filesToSend.add(fts);
+					++filesLoaded[0];
+				}
+			}
+			loadedAllFiles.set(true);
+		}).start();
+
 		new Thread(() -> {
 			// Begin to set up state transfer connection
 			System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
@@ -1559,14 +1557,38 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				System.exit(101);
 			}
 			try {
-				System.out.println(System.currentTimeMillis() + ": First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
+				//System.out.println(System.currentTimeMillis() + ": First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
 				dos.get().writeInt(savepointPath.length());
 				dos.get().writeChars(savepointPath);
-				System.out.println(System.currentTimeMillis() + ": Sending immutable state with " + finalSnapshot.length + " bytes");
-				dos.get().writeInt(finalSnapshot.length);
-				System.out.println(System.currentTimeMillis() + ": Sent length of immutable state");
-				dos.get().write(finalSnapshot);
-				System.out.println(System.currentTimeMillis() + ": Sent immutable state");
+
+				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
+					while (filesSent[0] >= filesLoaded[0]) {
+						Thread.yield();
+					}
+					FileToSend fts = filesToSend.get(filesSent[0]);
+					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
+
+					dos.get().writeLong(fts.file.length());
+					dos.get().write(fts.fileAsBytes);
+					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
+					// Remove the prefix that is common in the file path and the root checkpoint directory
+					for (int i = 0, j = 0; j < savepointPath.length(); i++, j++) {
+						if (relativePath.charAt(i) == savepointPath.charAt(j)) {
+							// We decrement i because we remove a character
+							relativePath.deleteCharAt(i--);
+						} else {
+							break;
+						}
+					}
+					System.out.println("savepointPath: " + savepointPath + ", relativePath: " + relativePath);
+					dos.get().writeInt(relativePath.length());
+					dos.get().writeChars(relativePath.toString());
+					++filesSent[0];
+				}
+				System.out.println("Sent all static files");
+				// -1 means that no file remains
+				dos.get().writeLong(-1);
+
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
@@ -1628,18 +1650,18 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			System.out.println(System.currentTimeMillis() + ": Created file " + lockFile2.getAbsolutePath());
 			DoMoveStaticQueryState(query_id, new_host);
 			System.out.println("Forwarding " + incomingTupleBuffer.size() + " tuples to the new host");
-                	for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
-                        	int outputStreamId = outgoing_tuple.f0;
-                        	String outputStreamName = streamIdToName.get(outputStreamId);
-                        	Row row = outgoing_tuple.f1;
-                        	// Send tuple to subscribers
-                        	TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
-                        	for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
-                                	String topic = outputStreamName + "-" + otherNodeId;
-                                	System.out.println("Forwarding buffered tuples to topic " + topic);
-                                	nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
-                        	}
-                	}
+			for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
+					int outputStreamId = outgoing_tuple.f0;
+					String outputStreamName = streamIdToName.get(outputStreamId);
+					Row row = outgoing_tuple.f1;
+					// Send tuple to subscribers
+					TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
+					for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
+							String topic = outputStreamName + "-" + otherNodeId;
+							System.out.println("Forwarding buffered tuples to topic " + topic);
+							nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+					}
+			}
 			return "Success";
 		}
 
@@ -1669,69 +1691,69 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		assert newestIncrementalCheckpoint != null;
 
 		System.out.println(System.currentTimeMillis() + ": Loading checkpoint " + newestIncrementalCheckpoint.getPath());
-		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 
-		//File metafile = new File(newestIncrementalCheckpoint.getAbsolutePath() + "/_metadata");
-
-		/*try {
-			while (newestIncrementalCheckpoint.lastModified() > System.currentTimeMillis() - 10) {
-				Thread.yield();
-			}
-			ZipDirectory.zipDirectory(savepointPath, zipPath);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}*/
-		try {
-			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-
-		// Read savepointPath and send it as a byte array
-		// LoadQueryState() will write the array to file and restore it
-		byte[] snapshot = null;
-		System.out.println(System.currentTimeMillis() + ": Moving query state from savepoint " + savepointPath);
-		File file = new File(zipPath);
-		while (!file.exists()) {
-			System.out.println("Waiting for savepoint file " + file.getPath() + " to be created");
-			try {
-				System.out.println("Waiting for savepoint file (canonical) " + file.getCanonicalPath() + " to be created");
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-			System.out.println("Waiting for savepoint file (absolute) " + file.getAbsolutePath() + " to be created");
-		}
-		try {
-			snapshot = FileUtils.readFileToByteArray(file);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}
-
-		byte[] finalSnapshot = snapshot;
-		AtomicBoolean sentSecondZip = new AtomicBoolean(false);
+		String finalCheckpointDirectory = newestIncrementalCheckpoint.getAbsolutePath();
+		List<FileToSend> filesToSend = new ArrayList<>();
+		final int[] filesSent = {0};
+		final int[] filesLoaded = {0};
+		AtomicBoolean loadedAllFiles = new AtomicBoolean(false);
 		new Thread(() -> {
-			// Begin to set up state transfer connection
-			while (!sentFirstZip.get()) {
-				Thread.yield();
+			File rootFile = new File(finalCheckpointDirectory);
+			for (File file : rootFile.listFiles()) {
+				assert file.isFile();
+				// This means that we can load 10 more files than we have sent
+				while (filesLoaded[0] > filesSent[0] + 10) {
+					Thread.yield();
+				}
+				FileToSend fts = new FileToSend(file);
+				fts.loadFile();
+				filesToSend.add(fts);
+				++filesLoaded[0];
 			}
-			System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
+			loadedAllFiles.set(true);
+		}).start();
+
+		new Thread(() -> {
 			try {
-				System.out.println(System.currentTimeMillis() + ": Sending mutable state with " + finalSnapshot.length + " bytes");
-				dos.get().writeInt(finalSnapshot.length);
-				System.out.println(System.currentTimeMillis() + ": Sent length of mutable state");
-				dos.get().write(finalSnapshot);
-				System.out.println(System.currentTimeMillis() + ": Sent mutable state");
+				while (!sentFirstZip.get()) {
+					Thread.yield();
+				}
+				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
+					while (filesSent[0] >= filesLoaded[0]) {
+						Thread.yield();
+					}
+					FileToSend fts = filesToSend.get(filesSent[0]);
+					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
+
+					dos.get().writeLong(fts.file.length());
+					dos.get().write(fts.fileAsBytes);
+					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
+					// Remove the prefix that is common in the file path and the root checkpoint directory
+					for (int i = 0, j = 0; j < savepointPath.length(); i++, j++) {
+						if (relativePath.charAt(i) == savepointPath.charAt(j)) {
+							// We decrement i because we remove a character
+							relativePath.deleteCharAt(i--);
+						} else {
+							break;
+						}
+					}
+					System.out.println("savepointPath: " + savepointPath + ", relativePath: " + relativePath);
+					dos.get().writeInt(relativePath.length());
+					dos.get().writeChars(relativePath.toString());
+					++filesSent[0];
+				}
+				// -1 means that no file remains
+				dos.get().writeLong(-1);
+				System.out.println("Sent all dynamic files");
+
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
 			// Now we have sent the snapshot to the new host
 			// The new host will receive in the task how many bytes it must receive on its socket
-			sentSecondZip.set(true);
+			sentFirstZip.set(true);
 		}).start();
-		// TODO: END OF SENDING FINAL CHECKPOINT
-		while (!sentSecondZip.get()) {
-			Thread.yield();
-		}
+
 		long ms_stop = System.currentTimeMillis();
 		System.out.println("Sending dynamic state took " + (ms_stop-ms_start) + " ms");
 
@@ -1768,85 +1790,102 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		File zip = new File(zippedSavepointPath);
 		zip.delete();
 
-		Socket client_socket;
-		DataInputStream dis = null;
+		final Socket[] client_socket = new Socket[1];
+		final DataInputStream[] dis = {null};
 		int snapshot_length;
-		int snapshot2_length;
-		String sourceSavepointPath;
-		long ms_start_immutable = 0, ms_stop_immutable = 0;
+		final String[] sourceSavepointPath = new String[1];
+		final long[] ms_start_immutable = {0};
+		long ms_stop_immutable = 0;
 		long ms_start_mutable = 0, ms_stop_mutable = 0;
-		try {
-			client_socket = state_transfer_server.accept();
-			ms_start_immutable = System.currentTimeMillis();
-			dis = new DataInputStream(client_socket.getInputStream());
-			int sourceSavepointPathLength = dis.readInt();
-			//System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
-			char[] sourceSavepointPathArray = new char[sourceSavepointPathLength];
-			for (int i = 0; i < sourceSavepointPathLength; i++) {
-				sourceSavepointPathArray[i] = dis.readChar();
-			}
-			System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
-			sourceSavepointPath = String.valueOf(sourceSavepointPathArray);
-			System.out.println("sourceSavepoint: " + sourceSavepointPath);
-			snapshot_length = dis.readInt();
-			byte[] snapshot = new byte[snapshot_length];
-			System.out.println("Received immutable state with " + snapshot_length + " bytes");
-			dis.readFully(snapshot);
-			ms_stop_immutable = System.currentTimeMillis();
-			FileUtils.writeByteArrayToFile(zip, snapshot);
-			while (!zip.exists()) {
-				Thread.yield();
-			}
-		} catch (IOException e) {
-			e.printStackTrace();
-			System.exit(103);
-		}
-		long ms_immutable_unzipped = System.currentTimeMillis();
-		System.out.println("Received immutable state");
-
-		String[] savepointParentPathArray = savepointPath.split("/");
-		savepointParentPathArray[savepointParentPathArray.length - 1] = "";
-		String savepointParentPath = String.join("/", savepointParentPathArray);
-		try {
-			UnzipFile.unzip(zippedSavepointPath, savepointParentPath);
-			zip.delete();
-		} catch (IOException e) {
-			e.printStackTrace();
-			System.exit(103);
-		}
 
 		long ms_before_start_mutable = System.currentTimeMillis();
+		AtomicBoolean receivedAllFiles = new AtomicBoolean(false);
 		if (CheckpointCoordinator.incrementalCheckpointing) {
-			try {
-
-				snapshot2_length = dis.readInt();
-				ms_start_mutable = System.currentTimeMillis();
-				byte[] snapshot2 = new byte[snapshot2_length];
-				System.out.println("Received mutable state with " + snapshot2_length + " bytes");
-				dis.readFully(snapshot2);
-				FileUtils.writeByteArrayToFile(zip, snapshot2);
-				ms_stop_mutable = System.currentTimeMillis();
-				while (!zip.exists()) {
-					Thread.yield();
+			List<FileToReceive> receivedFiles = new ArrayList<>();
+			new Thread(() -> {
+				int index = 0;
+				while (!receivedAllFiles.get()) {
+					while (receivedFiles.size() == index) {
+						Thread.yield();
+					}
+					FileToReceive ftr = receivedFiles.get(index);
+					File checkpoint_file = new File(savepointPath + ftr.filename);
+					System.out.println("Received file " + savepointPath + ftr.filename);
+					try {
+						checkpoint_file.createNewFile();
+					} catch (IOException e) {
+						e.printStackTrace();
+					}
+					++index;
 				}
+			}).start();
+
+			try {
+				client_socket[0] = state_transfer_server.accept();
+				dis[0] = new DataInputStream(client_socket[0].getInputStream());
+				ms_start_immutable[0] = System.currentTimeMillis();
+				int sourceSavepointPathLength = dis[0].readInt();
+				//System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
+				StringBuilder sourceSavepointPathArray = new StringBuilder(sourceSavepointPathLength);
+				for (int i = 0; i < sourceSavepointPathLength; i++) {
+					sourceSavepointPathArray.append(dis[0].readChar());
+				}
+				System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
+				sourceSavepointPath[0] = sourceSavepointPathArray.toString();
+				System.out.println("sourceSavepoint: " + sourceSavepointPath[0]);
+
+				// TODO: Receive files
+				while (true) {
+					long fileLength = dis[0].readLong();
+					if (fileLength == -1) {
+						break;
+					}
+					byte[] fileAsBytes = new byte[(int)fileLength];
+					dis[0].readFully(fileAsBytes);
+					int filenameLength = dis[0].readInt();
+					StringBuilder filename = new StringBuilder();
+					for (int i = 0; i < filenameLength; i++) {
+						filename.append(dis[0].readChar());
+					}
+
+					FileToReceive receivedFile = new FileToReceive(filename.toString(), fileAsBytes);
+					receivedFiles.add(receivedFile);
+					File checkpointFile = new File(savepointPath + receivedFile.filename);
+					System.out.println("Received file " + receivedFiles.size() + ": " + savepointPath + receivedFile.filename);
+					//checkpointFile.getParentFile().mkdirs();
+					FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
+				}
+				// Now we have received all files
+				receivedAllFiles.set(true);
+				System.out.println("Received all static files");
 			} catch (IOException e) {
 				e.printStackTrace();
-				System.exit(103);
 			}
 
-			System.out.println("Received mutable state");
-			while (!zip.exists()) {
-				try {
-					zip.createNewFile();
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			}
 
-			// The difference between Zip 1 and 2 is that we place the contents of the second zip
-			// within the first unzipped folder
 			try {
-				UnzipFile.unzip(zippedSavepointPath, savepointPath);
+				// TODO: Receive files
+				while (true) {
+					long fileLength = dis[0].readLong();
+					if (fileLength == -1) {
+						break;
+					}
+					byte[] fileAsBytes = new byte[(int)fileLength];
+					dis[0].readFully(fileAsBytes);
+					int filenameLength = dis[0].readInt();
+					StringBuilder filename = new StringBuilder();
+					for (int i = 0; i < filenameLength; i++) {
+						filename.append(dis[0].readChar());
+					}
+
+					FileToReceive receivedFile = new FileToReceive(filename.toString(), fileAsBytes);
+					File checkpointFile = new File(savepointPath + receivedFile.filename);
+					System.out.println("Received file in " + savepointPath + receivedFile.filename);
+					//checkpointFile.getParentFile().mkdirs();
+					FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
+					receivedFiles.add(receivedFile);
+				}
+				System.out.println("Received all dynamic files");
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
@@ -1856,7 +1895,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
 		File newestIncrementalCheckpoint = null;
 		int maxCheckpointNumber = 0;
-		for (File child : new File(savepointPath).listFiles()) {
+		File savepointPathFile = new File(savepointPath);
+		System.out.println("Iterating through checkpoints in " + savepointPath);
+		savepointPathFile.mkdirs();
+		for (File child : savepointPathFile.listFiles()) {
 			if (child.getName().startsWith("chk-")) {
 				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
 				if (checkpointNumber > maxCheckpointNumber) {
@@ -1881,8 +1923,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
 			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 		}
-		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable) + " ms");
-		System.out.println("Unzipping immutable state took " + (ms_immutable_unzipped - ms_stop_immutable) + " ms");
+		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable[0]) + " ms");
+		//System.out.println("Unzipping immutable state took " + (ms_immutable_unzipped - ms_stop_immutable) + " ms");
 
 		System.out.println("Time between receiving the immutable state and the start of receiving the mutable state " + (ms_start_mutable - ms_before_start_mutable) + " ms");
 
