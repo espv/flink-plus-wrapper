@@ -575,7 +575,7 @@ public abstract class FlinkKafkaConsumerBase<T> extends RichParallelSourceFuncti
 
         subscribedPartitionsToStartOffsets = new HashMap<>();
         final List<KafkaTopicPartition> allPartitions = partitionDiscoverer.discoverPartitions();
-        if (restoredState != null) {
+        if (restoredState != null && false) {
             for (KafkaTopicPartition partition : allPartitions) {
                 if (!restoredState.containsKey(partition)) {
                     restoredState.put(partition, KafkaTopicPartitionStateSentinel.EARLIEST_OFFSET);

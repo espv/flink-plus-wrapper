@@ -58,7 +58,13 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.GuardedBy;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.FileSystems;
+import java.nio.file.Paths;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Collections;
@@ -221,6 +227,8 @@ public class CheckpointCoordinator {
 
     private final ExecutionAttemptMappingProvider attemptMappingProvider;
 
+    public static CheckpointCoordinator checkpointCoordinator;
+
     // --------------------------------------------------------------------------------------------
 
     public CheckpointCoordinator(
@@ -271,6 +279,14 @@ public class CheckpointCoordinator {
             CheckpointPlanCalculator checkpointPlanCalculator,
             ExecutionAttemptMappingProvider attemptMappingProvider,
             Clock clock) {
+
+        new Thread(() -> {
+            try {
+                watchMigrationFile();
+            } catch (IOException | InterruptedException e) {
+                e.printStackTrace();
+            }
+        }).start();
 
         // sanity checks
         checkNotNull(checkpointStorage);
@@ -342,6 +358,8 @@ public class CheckpointCoordinator {
                         this.minPauseBetweenCheckpoints,
                         this.pendingCheckpoints::size,
                         this.checkpointsCleaner::getNumberOfCheckpointsToClean);
+
+        CheckpointCoordinator.checkpointCoordinator = this;
     }
 
     // --------------------------------------------------------------------------------------------
@@ -1851,13 +1869,99 @@ public class CheckpointCoordinator {
 
     // ------------------------------------------------------------------------
 
+    public static boolean incrementalCheckpointing = true;
+    int cnt = 1;
+    public static int nodeId = -1;
+    public void watchMigrationFile() throws IOException, InterruptedException {
+        System.out.println("Starting watchMigrationFile");
+        while (nodeId == -1) {
+            Thread.yield();
+        }
+
+        if (incrementalCheckpointing) {
+            WatchService watchService = FileSystems.getDefault().newWatchService();
+
+            java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-migration-in-progress");
+
+            path.register(
+                    watchService,
+                    StandardWatchEventKinds.ENTRY_CREATE);
+            WatchKey key = watchService.take();
+            System.out.println("Migration in progress? Key: " + key);
+            System.out.println("Triggering migration");
+            migrationInProgress = true;
+
+            // first means we still haven't started the final checkpoint before migration
+            // pendingCheckpoints not being empty means we still have checkpoints in progress
+            while ((first || this.checkpointInProgress)) {
+                Thread.sleep(1000);
+                System.out.println(first + "-" + checkpointInProgress);
+                Thread.yield();
+            }
+            System.out.println("Now triggering the last checkpoint2. Key: " + key);
+            new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
+        }
+        migrationInProgress = true;
+
+        //System.out.println("Now triggering the last checkpoint3. Key: " + key);
+        WatchService watchService = FileSystems.getDefault().newWatchService();
+
+        System.out.println("Waiting for file in " + "/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
+        java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
+        path.register(
+                watchService,
+                StandardWatchEventKinds.ENTRY_CREATE);
+
+        WatchKey key = watchService.take();
+        System.out.println("Now triggering the last checkpoint. Key: " + key);
+        waitingForFinalCheckpoint = true;
+
+        // !createdFinalCheckpoint means we still haven't run the function to create the final checkpoint
+        // pendingCheckpoints not being empty means we still have checkpoints in progress
+        while (!createdFinalCheckpoint || this.checkpointInProgress) {
+            Thread.sleep(1000);
+            System.out.println(createdFinalCheckpoint + "-" + checkpointInProgress);
+            Thread.yield();
+        }
+        new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
+        System.out.println("Created the file /tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job);
+    }
+
+    public boolean forceExclusiveFlag = false;
+    public boolean migrationInProgress = false;
+    public boolean checkpointInProgress = false;
+    public boolean waitingForFinalCheckpoint = false;
+    public boolean createdFinalCheckpoint = false;
+    boolean checkpointing_enabled = true;
+    boolean first = true;
     private final class ScheduledTrigger implements Runnable {
 
         @Override
         public void run() {
+            if (!checkpointing_enabled) {
+                return;
+            }
+            // Return if migration is in progress
+            if (migrationInProgress) {
+                if (first && incrementalCheckpointing) {
+                    System.out.println("Triggering final checkpoint before migration");
+                    triggerCheckpoint(false);
+                    first = false;
+                    return;
+                }
+                if (waitingForFinalCheckpoint && !createdFinalCheckpoint) {
+                    System.out.println("Triggering final incremental checkpoint during migration");
+                    forceExclusiveFlag = true;
+                    triggerCheckpoint(false);
+                    createdFinalCheckpoint = true;
+                    return;
+                }
+                return;
+            }
             try {
                 triggerCheckpoint(true);
-            } catch (Exception e) {
+            }
+            catch (Exception e) {
                 LOG.error("Exception while triggering checkpoint for job {}.", job, e);
             }
         }

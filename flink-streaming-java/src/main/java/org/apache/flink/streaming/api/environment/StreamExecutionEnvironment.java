@@ -63,6 +63,9 @@ import org.apache.flink.core.execution.PipelineExecutor;
 import org.apache.flink.core.execution.PipelineExecutorFactory;
 import org.apache.flink.core.execution.PipelineExecutorServiceLoader;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.jobgraph.SavepointConfigOptions;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
+import org.apache.flink.runtime.minicluster.MiniCluster;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.StateBackendLoader;
@@ -169,6 +172,10 @@ public class StreamExecutionEnvironment {
 
     /** The default savepoint directory used by the job. */
     private Path defaultSavepointDirectory;
+
+    protected JobClient jobClient;
+
+    protected SavepointRestoreSettings savepointRestoreSettings;
 
     /** The time characteristic used by the data streams. */
     private TimeCharacteristic timeCharacteristic = DEFAULT_TIME_CHARACTERISTIC;
@@ -286,6 +293,14 @@ public class StreamExecutionEnvironment {
     public StreamExecutionEnvironment setParallelism(int parallelism) {
         config.setParallelism(parallelism);
         return this;
+    }
+
+    public JobClient getJobClient() {
+        return jobClient;
+    }
+
+    public void setSavepointRestoreSettings(SavepointRestoreSettings savepointRestoreSettings) {
+        this.savepointRestoreSettings = savepointRestoreSettings;
     }
 
     /**
@@ -1845,7 +1860,16 @@ public class StreamExecutionEnvironment {
      */
     @Internal
     public JobExecutionResult execute(StreamGraph streamGraph) throws Exception {
-        final JobClient jobClient = executeAsync(streamGraph);
+        if (savepointRestoreSettings != null) {
+            this.configuration.set(SavepointConfigOptions.SAVEPOINT_PATH, savepointRestoreSettings.getRestorePath());
+            this.configuration.set(SavepointConfigOptions.SAVEPOINT_IGNORE_UNCLAIMED_STATE, savepointRestoreSettings.allowNonRestoredState());
+            System.out.println("Setting savepoint restore settings");
+            savepointRestoreSettings = null;
+        } else {
+            this.configuration.removeConfig(SavepointConfigOptions.SAVEPOINT_PATH);
+            this.configuration.removeConfig(SavepointConfigOptions.SAVEPOINT_IGNORE_UNCLAIMED_STATE);
+        }
+        this.jobClient = executeAsync(streamGraph);
 
         try {
             final JobExecutionResult jobExecutionResult;

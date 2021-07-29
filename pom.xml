@@ -87,6 +87,7 @@ under the License.
 		<module>flink-walkthroughs</module>
 		<module>flink-kubernetes</module>
 		<module>flink-external-resources</module>
+		<module>flink-experiments</module>
 		<module>tools/ci/java-ci-tools</module>
 	</modules>
 
@@ -598,7 +599,7 @@ under the License.
 			<dependency>
 				<groupId>org.apache.commons</groupId>
 				<artifactId>commons-math3</artifactId>
-				<version>3.5</version>
+				<version>3.6.1</version>
 			</dependency>
 
 			<dependency>
