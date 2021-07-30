@@ -1031,7 +1031,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
             }
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
-            for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
+            for (int otherNodeId : to_nodes) {
                 nodesSentTo.put(otherNodeId, nodesSentTo.getOrDefault(otherNodeId, 0) + 1);
                 String topicName = stream_name + "-" + otherNodeId;
                 //for (Row tuple : streamToTuples.get(stream_id)) {
