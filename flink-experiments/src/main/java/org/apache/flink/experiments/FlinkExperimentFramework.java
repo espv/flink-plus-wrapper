@@ -66,6 +66,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
 	boolean useRowtime = false;
 	String trace_output_folder;
+	static boolean migrationInProgress = false;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
 	EnvironmentSettings fsSettings = EnvironmentSettings.newInstance().useOldPlanner().inStreamingMode().build();
@@ -79,7 +80,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	Map<Integer, RowTypeInfo> streamIdToTypeInfo = new HashMap<>();
 	static Map<Integer, TypeInformationSerializationSchema<Row>> streamIdToSerializationSchema = new HashMap<>();
 	Map<String, Integer> streamNameToId = new HashMap<>();
-	Map<Integer, String> streamIdToName = new HashMap<>();
+	static Map<Integer, String> streamIdToName = new HashMap<>();
 	Map<Integer, Map<String, Object>> nodeIdToIpAndPort = new HashMap<>();
 	static Map<Integer, List<Integer>> streamIdToNodeIds = new HashMap<>();
 	Map<Integer, DataStream<Row> > streamIdToDataStream = new HashMap<>();
@@ -365,7 +366,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 						System.out.println("Forwarding tuples to topic " + topic);
 						nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 					}
-				} else */if (streamIdActive.getOrDefault(stream_id, true)) {
+				} else */
+                if (migrationInProgress) {
+                    String outputStreamName = streamIdToName.get(stream_id);
+                    // Send tuple to subscribers
+                    TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
+                    for (int otherNodeId : streamIdToNodeIds.get(stream_id)) {
+                        String topic = outputStreamName + "-" + otherNodeId;
+                        nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
+                    }
+                } else if (streamIdActive.getOrDefault(stream_id, true)) {
 					out.collect(row);
 				} else if (streamIdBuffer.getOrDefault(stream_id, false)) {
 					incomingTupleBuffer.add(new Tuple2<>(stream_id, row));
@@ -776,14 +786,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
 			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
 			env.setStateBackend(rocksdb);
 		} catch (IOException e) {
 			e.printStackTrace();
 			System.exit(1021);
 		}
-		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/state/node-" + nodeId));
+		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId));
 		//env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
@@ -963,7 +973,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
 		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
 			env.setStateBackend(rocksdb);
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -1143,7 +1153,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 			}
 
-			checkpointDirectory = System.getenv("STATE_FOLDER") + "/state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
 			Thread.sleep(3000);
@@ -1493,7 +1503,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 			}
 
-			checkpointDirectory = System.getenv("STATE_FOLDER") + "/state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
 		} catch (InterruptedException | ExecutionException e) {
@@ -1626,6 +1636,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String MoveDynamicQueryState(int query_id, int new_host) {
 		File lockFile2;
+        migrationInProgress = true;
 		long ms_start = System.currentTimeMillis();
 		String checkpointDirectory = null;
 		try {
@@ -1634,7 +1645,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
             }
             jobID = env.getJobClient().getJobID();
 
-			checkpointDirectory = System.getenv("STATE_FOLDER") + "/state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
 		} catch (InterruptedException | ExecutionException e) {
