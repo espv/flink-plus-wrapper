@@ -53,6 +53,7 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static java.lang.Math.abs;
 
@@ -220,7 +221,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String AddNextHop(List<Integer> streamIds, List<Integer> nodeIds) {
 		for (int streamId : streamIds) {
 			if (!streamIdToNodeIds.containsKey(streamId)) {
-				streamIdToNodeIds.put(streamId, new ArrayList<>());
+			    synchronized (streamIdToNodeIds) {
+                    streamIdToNodeIds.put(streamId, new ArrayList<>());
+                }
 			}
 
 			streamIdToNodeIds.get(streamId).addAll(nodeIds);
@@ -1022,29 +1025,23 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			if (stream_id == 2) {
 				row.setField(1, rs.nextString());
 			}
+            List<Integer> to_nodes;
+            synchronized(streamIdToNodeIds) {
+                to_nodes = new ArrayList<>(streamIdToNodeIds.get(stream_id));
+            }
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
-			synchronized (streamIdToNodeIds) {
-                for (int otherNodeId : streamIdToNodeIds.getOrDefault(
-                        stream_id,
-                        new ArrayList<>())) {
-                    nodesSentTo.put(otherNodeId, nodesSentTo.getOrDefault(otherNodeId, 0) + 1);
-                    String topicName = stream_name + "-" + otherNodeId;
-                    //for (Row tuple : streamToTuples.get(stream_id)) {
-                    if (++tupleCnt % 100000 == 0) {
-                        System.out.println(
-                                System.nanoTime() + ": Sending tuple " + tupleCnt + " to node "
-                                        + otherNodeId + " with topic " + topicName + " and IP "
-                                        + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
-                    }
-                    nodeIdToKafkaProducer
-                            .get(otherNodeId)
-                            .send(new ProducerRecord<>(topicName,
-                                    null,
-                                    null,
-                                    serializationSchema.serialize(row)));
-                    //}
+            for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
+                nodesSentTo.put(otherNodeId, nodesSentTo.getOrDefault(otherNodeId, 0) + 1);
+                String topicName = stream_name + "-" + otherNodeId;
+                //for (Row tuple : streamToTuples.get(stream_id)) {
+                if (++tupleCnt % 100000 == 0) {
+                    System.out.println(System.nanoTime() + ": Sending tuple " + tupleCnt + " to node "
+                                    + otherNodeId + " with topic " + topicName + " and IP "
+                                    + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
                 }
+                nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, null, null, serializationSchema.serialize(row)));
+                //}
             }
 		}
 
