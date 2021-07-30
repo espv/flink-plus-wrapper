@@ -776,14 +776,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
 			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
 			env.setStateBackend(rocksdb);
 		} catch (IOException e) {
 			e.printStackTrace();
 			System.exit(1021);
 		}
-		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId));
+		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/state/node-" + nodeId));
 		//env.getConfig().disableSysoutLogging();
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
@@ -963,7 +963,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
 		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
+			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
 			env.setStateBackend(rocksdb);
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -1056,7 +1056,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String RetEndOfStream(int milliseconds) {
 		milliseconds += TIMELASTRECEIVEDTHRESHOLD;  // We add waiting time because we don't log every received tuple
-		File file = new File(System.getenv("FLINK_BINARIES") + "/log/FlinkWorker.log");
+		File file = new File(System.getenv("STATE_FOLDER") + "/log/FlinkWorker.log");
 		try {
 			// First we wait until the log file is not empty
 			// Importantly, the log file may only contain the logs for when having received tuples
@@ -1143,7 +1143,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 			}
 
-			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
 			Thread.sleep(3000);
@@ -1159,14 +1159,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Thread.yield();
 		}*/
 		// TODO: zip savepointPath
-		/*String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		/*String zipPath = System.getenv("STATE_FOLDER") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 		try {
 			ZipDirectory.zipDirectory(savepointPath, zipPath);
 		} catch (IOException e) {
 			e.printStackTrace();
 		}*/
 
-		String zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		String zipPath = System.getenv("STATE_FOLDER") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 		try {
 			ZipDirectory.zipDirectory(savepointPath, zipPath);
 		} catch (IOException e) {
@@ -1254,7 +1254,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		assert newestIncrementalCheckpoint != null;
 
 		System.out.println("Loading checkpoint " + newestIncrementalCheckpoint.getPath());
-		zipPath = System.getenv("FLINK_BINARIES") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
+		zipPath = System.getenv("STATE_FOLDER") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 		try {
 			ZipDirectory.zipDirectory(newestIncrementalCheckpoint.getAbsolutePath(), zipPath);
 		} catch (IOException e) {
@@ -1329,8 +1329,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		this.queryIdToMapQuery = queryIdToMapQuery;
 		this.queryIdToStreamIdToNodeIds = queryIdToStreamIdToNodeIds;
 		// Write snapshot to savepoints/received_savepoints/savepointName
-		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName;
-		String zippedSavepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
+		savepointPath = System.getenv("STATE_FOLDER") + "/savepoints/received_savepoints/" + savepointName;
+		String zippedSavepointPath = System.getenv("STATE_FOLDER") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
 		File zip = new File(zippedSavepointPath);
 		zip.delete();
 		try {
@@ -1493,7 +1493,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				e.printStackTrace();
 			}
 
-			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
 		} catch (InterruptedException | ExecutionException e) {
@@ -1634,7 +1634,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
             }
             jobID = env.getJobClient().getJobID();
 
-			checkpointDirectory = System.getenv("FLINK_BINARIES") + "/state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/state/node-" + nodeId + "/" + jobID;
 			savepointPath = checkpointDirectory;
 
 		} catch (InterruptedException | ExecutionException e) {
@@ -1800,8 +1800,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		this.queryIdToMapQuery = queryIdToMapQuery;
 		this.queryIdToStreamIdToNodeIds = queryIdToStreamIdToNodeIds;
 		// Write snapshot to savepoints/received_savepoints/savepointName
-		savepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/" + savepointName;
-		String zippedSavepointPath = System.getenv("FLINK_BINARIES") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
+		savepointPath = System.getenv("STATE_FOLDER") + "/savepoints/received_savepoints/" + savepointName;
+		String zippedSavepointPath = System.getenv("STATE_FOLDER") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
 		File zip = new File(zippedSavepointPath);
 		zip.delete();
 
