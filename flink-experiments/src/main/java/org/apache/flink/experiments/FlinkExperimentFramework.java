@@ -1014,7 +1014,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	RandomString rs = new RandomString(4);
 	public String ProcessTuples(List<Tuple2<Integer, Row>> tuples_to_send, boolean clear_tuples) {
 		//System.out.println("Processing " + tuples_to_send.size() + ", or more correctly: " + tuples_to_send.size() + " tuples");
-		for (int i = 0; i < tuples_to_send.size(); i++) {
+		Map<Integer, Integer> nodesSentTo = new HashMap<>();
+        for (int i = 0; i < tuples_to_send.size(); i++) {
 			Tuple2<Integer, Row> tuple = tuples_to_send.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
@@ -1024,6 +1025,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
 			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
+                nodesSentTo.put(otherNodeId, nodesSentTo.getOrDefault(otherNodeId, 0) + 1);
 				String topicName = stream_name + "-" + otherNodeId;
 				//for (Row tuple : streamToTuples.get(stream_id)) {
 				if (++tupleCnt % 100000 == 0) {
@@ -1037,6 +1039,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		if (clear_tuples) {
 			tuples_to_send.clear();
 		}
+		for (int node_id : nodesSentTo.keySet()) {
+		    System.out.println("Sent " + nodesSentTo.get(node_id) + " tuples to Node " + node_id);
+        }
 		pktsPublished = 0;
 		return "Success";
 	}
