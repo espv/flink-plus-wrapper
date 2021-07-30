@@ -311,12 +311,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 //System.out.println("Received row: " + value);
                 //System.out.println("Received tuple " + cnt[0] + ": " + value);
                 // We only log once every maximum one second, to avoid too many tracepoints
-                //if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
-                LOG.info("Received tuple {}", cnt[0]);
-                System.out.println("Received tuple " + cnt[0] + ": " + value + " at "
-                        + System.currentTimeMillis());
-                timeLastRecvdTuple = newTime;
-                //}
+                if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
+					LOG.info("Received tuple {}", cnt[0]);
+					System.out.println("Received tuple " + cnt[0] + ": " + value + " at "
+							+ System.currentTimeMillis());
+					timeLastRecvdTuple = newTime;
+                }
             }
         };
         regularSinkFunctions.put(stream_id, sf);
@@ -1016,9 +1016,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
 				String topicName = stream_name + "-" + otherNodeId;
 				//for (Row tuple : streamToTuples.get(stream_id)) {
-				//if (++tupleCnt % 100000 == 0) {
+				if (++tupleCnt % 100000 == 0) {
 					System.out.println( System.nanoTime() + ": Sending tuple " + tupleCnt + " to node " + otherNodeId + " with topic " + topicName + " and IP " + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
-				//}
+				}
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, null, null, serializationSchema.serialize(row)));
 				//}
 			}
