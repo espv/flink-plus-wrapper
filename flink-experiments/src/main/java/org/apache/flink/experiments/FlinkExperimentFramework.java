@@ -1018,13 +1018,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         for (int i = 0; i < tuples_to_send.size(); i++) {
 			Tuple2<Integer, Row> tuple = tuples_to_send.get(i);
 			int stream_id = tuple.f0;
+            List<Integer> to_nodes;
+            synchronized(streamIdToNodeIds) {
+                to_nodes = streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>());
+            }
 			Row row = tuple.f1;
 			if (stream_id == 2) {
 				row.setField(1, rs.nextString());
 			}
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
-			for (int otherNodeId : streamIdToNodeIds.getOrDefault(stream_id, new ArrayList<>())) {
+			for (int otherNodeId : to_nodes) {
                 nodesSentTo.put(otherNodeId, nodesSentTo.getOrDefault(otherNodeId, 0) + 1);
 				String topicName = stream_name + "-" + otherNodeId;
 				//for (Row tuple : streamToTuples.get(stream_id)) {
