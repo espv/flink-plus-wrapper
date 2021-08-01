@@ -1755,10 +1755,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			loadedAllFiles.set(true);
 		}).start();
 
+		long ms_stop_preparing = System.currentTimeMillis();
+		System.out.println("Extracting and preparing the state took " + (ms_stop_preparing-ms_start));
+
 		new Thread(() -> {
 			try {
-			    System.out.println("Now sending dynamic checkpoint files, sentFirstZip: " + sentFirstZip.get() + ", loadedAllFiles: " + loadedAllFiles.get());
-				while (!sentFirstZip.get()) {
+			    while (!sentFirstZip.get()) {
 					Thread.yield();
 				}
 				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
@@ -1787,17 +1789,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				}
 				// -1 means that no file remains
 				dos.get().writeLong(-1);
+                long ms_stop = System.currentTimeMillis();
 				System.out.println("Sent all dynamic files");
+                System.out.println("Sending dynamic state took " + (ms_stop-ms_stop_preparing) + " ms");
 
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
 		}).start();
 
-		long ms_stop = System.currentTimeMillis();
-		System.out.println("Sending dynamic state took " + (ms_stop-ms_start) + " ms");
 
-		// TODO: Hack to forward buffered incoming tuples to the new host
+		/*// TODO: Hack to forward buffered incoming tuples to the new host
 		System.out.println("Forwarding " + incomingTupleBuffer.size() + " tuples to the new host");
 		for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
 			int outputStreamId = outgoing_tuple.f0;
@@ -1810,7 +1812,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				System.out.println("Forwarding buffered tuples to topic " + topic);
 				nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 			}
-		}
+		}*/
 		return "Success";
 	}
 
