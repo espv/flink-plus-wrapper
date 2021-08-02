@@ -134,7 +134,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		props.put("enable.auto.commit", "true");
 		props.put("retries", 0);
 		props.put("batch.size", 16384);
-		props.put("linger.ms", 0);
+		props.put("linger.ms", 100);
 		props.put("buffer.memory", 33554432);
 		props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
 		props.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
@@ -788,16 +788,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
-		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
-			//fsStateBackend = (FsStateBackend) rocksdb.getCheckpointBackend();
-			env.setStateBackend(rocksdb);
-		} catch (IOException e) {
-			e.printStackTrace();
-			System.exit(1021);
-		}
-		//env.setStateBackend(new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId));
-		//env.getConfig().disableSysoutLogging();
+        env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
+        RocksDBStateBackend rocksdb = null;
+        try {
+            rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        env.setStateBackend(rocksdb);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -971,17 +969,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         env.getJobClient().cancel();
 
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
-		env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
+        env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-		try {
-			RocksDBStateBackend rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
-			env.setStateBackend(rocksdb);
-		} catch (IOException e) {
-			e.printStackTrace();
-			System.exit(1020);
-		}
+        RocksDBStateBackend rocksdb = null;
+        try {
+            rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        env.setStateBackend(rocksdb);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -1154,41 +1152,23 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		String checkpointDirectory = null;
 		long ms_start = System.currentTimeMillis();
 		try {
-		    // TODO: Find new way to get jobID.
-			while (env.getJobClient().getJobStatus().get() != JobStatus.RUNNING) {
-				Thread.yield();
-			}
-			jobID = env.getJobClient().getJobID();
+		    setJobID();
 
-			lockFile = new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress/" + jobID);
+			lockFile = new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress/" + getJobID());
 			try {
 				lockFile.createNewFile();
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
 
-			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + jobID;
+			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
 			savepointPath = checkpointDirectory;
 
 			Thread.sleep(3000);
-
-
-		} catch (InterruptedException | ExecutionException e) {
+		} catch (InterruptedException e) {
 			e.printStackTrace();
 			System.exit(31);
 		}
-
-		//File savepointPathFile = new File(savepointPath);
-		/*while (!savepointPathFile.exists()) {
-			Thread.yield();
-		}*/
-		// TODO: zip savepointPath
-		/*String zipPath = System.getenv("STATE_FOLDER") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
-		try {
-			ZipDirectory.zipDirectory(savepointPath, zipPath);
-		} catch (IOException e) {
-			e.printStackTrace();
-		}*/
 
 		String zipPath = System.getenv("STATE_FOLDER") + "/savepoints/created_zipped_savepoints/zippedSavepoint.zip";
 		try {
@@ -1250,7 +1230,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 		}
-		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + jobID);
+		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + getJobID());
 		try {
 			lockFile2.createNewFile();
 		} catch (IOException e) {
@@ -1262,8 +1242,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		} catch (InterruptedException e) {
 			e.printStackTrace();
 		}
-		// TODO: SEND FINAL CHECKPOINT
-		// TODO: SEND THE FINAL INCREMENTAL CHECKPOINT
 		File newestIncrementalCheckpoint = null;
 		int maxCheckpointNumber = 0;
 		for (File child : new File(checkpointDirectory).listFiles()) {
@@ -1486,6 +1464,32 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	boolean staticQueryFirst = true;
 
+    public void InitializeStateTransfer(int new_host) {
+        System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
+        String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
+        int new_host_state_transfer_port = (int) this.nodeIdToIpAndPort.get(new_host).get("state-transfer-port");
+        Socket clientSocket = null;
+        try {
+            clientSocket = new Socket(ip, new_host_state_transfer_port);
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.exit(100);
+        }
+        try {
+            dos.set(new DataOutputStream(clientSocket.getOutputStream()));
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.exit(101);
+        }
+        //System.out.println(System.currentTimeMillis() + ": First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
+        try {
+            dos.get().writeInt(savepointPath.length());
+            dos.get().writeChars(savepointPath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
 		// Send SetRestartTimestamp task before serializing the dynamic state
@@ -1493,6 +1497,22 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		task2.put("task", "setRestartTimestamp");
 		task2.put("node", Collections.singletonList(new_host));
 		speComm.speNodeComm.SendToSpe(task2);
+        Map<String, Object> task = new HashMap<>();
+        task.put("task", "loadQueryState");
+        List<Object> task_args = new ArrayList<>();
+        task_args.add(queryIdToMapQuery);
+        setJobID();
+        savepointPath = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+        String[] path = savepointPath.split("/");
+        String parentFolderName = path[path.length-1];
+        task_args.add(parentFolderName);
+        //List<Map<Integer, List<Integer>>> streamIdsToNodeIds = (List<Map<Integer, List<Integer>>>) queryIdToStreamIdToNodeIds.values();
+        task_args.add(queryIdToStreamIdToNodeIds);
+        task.put("arguments", task_args);
+        task.put("node", Collections.singletonList(new_host));
+        long ms_stop1 = System.currentTimeMillis();
+        System.out.println(System.currentTimeMillis() + ": Time at sending state: " + System.currentTimeMillis());
+        new Thread(() -> speComm.speNodeComm.SendToSpe(task)).start();
 		if (CheckpointCoordinator.incrementalCheckpointing) {
 			return DoMoveStaticQueryState(query_id, new_host);
 		} else {
@@ -1500,30 +1520,38 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}
 	}
 
+	public void setJobID() {
+        try {
+            while (env.getJobClient().getJobStatus().get() != JobStatus.RUNNING) {
+                Thread.yield();
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+        }
+        this.jobID = env.getJobClient().getJobID();
+    }
+
+    public JobID getJobID() {
+        if (this.jobID == null) {
+            setJobID();
+        }
+        return jobID;
+    }
+
 	public String DoMoveStaticQueryState(int query_id, int new_host) {
 		File lockFile;
 		String checkpointDirectory = null;
 		long ms_start = System.currentTimeMillis();
-		try {
-            while (env.getJobClient().getJobStatus().get() != JobStatus.RUNNING) {
-                Thread.yield();
-            }
-            jobID = env.getJobClient().getJobID();
 
-			lockFile = new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress/" + jobID);
-			try {
-				lockFile.createNewFile();
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
+        lockFile = new File("/tmp/expose-flink-" + nodeId + "-migration-in-progress/" + getJobID());
+        try {
+            lockFile.createNewFile();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
 
-			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + jobID;
-			savepointPath = checkpointDirectory;
-
-		} catch (InterruptedException | ExecutionException e) {
-			e.printStackTrace();
-			System.exit(31);
-		}
+        checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+        savepointPath = checkpointDirectory;
 
 		// Here we ensure that no checkpoint is currently in progress
 		try {
@@ -1536,23 +1564,36 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		// Read savepointPath and send it as a byte array
 		// LoadQueryState() will write the array to file and restore it
 		System.out.println(System.currentTimeMillis() + ": Moving query state from savepoint " + savepointPath);
-		String[] path = savepointPath.split("/");
-		String parentFolderName = path[path.length-1];
 
 		String finalCheckpointDirectory = checkpointDirectory;
 		List<FileToSend> filesToSend = new ArrayList<>();
 		final int[] filesSent = {0};
 		final int[] filesLoaded = {0};
 		AtomicBoolean loadedAllFiles = new AtomicBoolean(false);
-		new Thread(() -> {
+        long maxCheckpointNumber = CheckpointCoordinator.checkpointIdToMigrate1;
+
+        try {
+            while (CheckpointCoordinator.checkpointCoordinator.completedCheckpointStore.getLatestCheckpoint(
+                    false).getCheckpointID() < maxCheckpointNumber) {
+                try {
+                    Thread.sleep(1);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        System.out.println("Checkpoint is done. Now we send it");
+        new Thread(() -> {
 			File rootFile = new File(finalCheckpointDirectory);
 			for (File directory : rootFile.listFiles()) {
 				assert directory.isDirectory();
-				if (directory.getName().startsWith("chk-")) {
+				/*if (directory.getName().startsWith("chk-")) {
 					// We don't send incremental checkpoints here
 					continue;
-				}
-				for (File file : directory.listFiles()) {
+				}*/
+                for (File file : directory.listFiles()) {
 					assert file.isFile();
 					// This means that we can load 10 more files than we have sent
 					while (filesLoaded[0] > filesSent[0] + 10) {
@@ -1570,27 +1611,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		new Thread(() -> {
 			// Begin to set up state transfer connection
-			System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
-			String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
-			int new_host_state_transfer_port = (int) this.nodeIdToIpAndPort.get(new_host).get("state-transfer-port");
-			Socket clientSocket = null;
+            InitializeStateTransfer(new_host);
 			try {
-				clientSocket = new Socket(ip, new_host_state_transfer_port);
-			} catch (IOException e) {
-				e.printStackTrace();
-				System.exit(100);
-			}
-			try {
-				dos.set(new DataOutputStream(clientSocket.getOutputStream()));
-			} catch (IOException e) {
-				e.printStackTrace();
-				System.exit(101);
-			}
-			try {
-				//System.out.println(System.currentTimeMillis() + ": First sending savepointPath " + savepointPath + " with length " + savepointPath.length());
-				dos.get().writeInt(savepointPath.length());
-				dos.get().writeChars(savepointPath);
-
 				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
 					while (filesSent[0] >= filesLoaded[0]) {
 						Thread.yield();
@@ -1627,18 +1649,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			sentFirstZip.set(true);
 		}).start();
 
-		Map<String, Object> task = new HashMap<>();
-		task.put("task", "loadQueryState");
-		List<Object> task_args = new ArrayList<>();
-		task_args.add(queryIdToMapQuery);
-		task_args.add(parentFolderName);
-		//List<Map<Integer, List<Integer>>> streamIdsToNodeIds = (List<Map<Integer, List<Integer>>>) queryIdToStreamIdToNodeIds.values();
-		task_args.add(queryIdToStreamIdToNodeIds);
-		task.put("arguments", task_args);
-		task.put("node", Collections.singletonList(new_host));
 		long ms_stop1 = System.currentTimeMillis();
-		System.out.println(System.currentTimeMillis() + ": Time at sending state: " + System.currentTimeMillis());
-		new Thread(() -> speComm.speNodeComm.SendToSpe(task)).start();
 		while (!sentFirstZip.get()) {
 			Thread.yield();
 		}
@@ -1653,44 +1664,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         migrationInProgress = true;
 		long ms_start = System.currentTimeMillis();
 		String checkpointDirectory = null;
-		try {
-            while (env.getJobClient().getJobStatus().get() != JobStatus.RUNNING) {
-                Thread.yield();
-            }
-            jobID = env.getJobClient().getJobID();
 
-			checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + jobID;
-			savepointPath = checkpointDirectory;
-
-		} catch (InterruptedException | ExecutionException e) {
-			e.printStackTrace();
-			System.exit(31);
-		}
-
-		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + jobID);
+        checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+        savepointPath = checkpointDirectory;
+		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + getJobID());
 		try {
 			lockFile2.createNewFile();
 		} catch (IOException e) {
 			e.printStackTrace();
-		}
-
-		if (!CheckpointCoordinator.incrementalCheckpointing) {
-			System.out.println(System.currentTimeMillis() + ": Created file " + lockFile2.getAbsolutePath());
-			DoMoveStaticQueryState(query_id, new_host);
-			System.out.println("Forwarding " + incomingTupleBuffer.size() + " tuples to the new host");
-			for (Tuple2<Integer, Row> outgoing_tuple : incomingTupleBuffer) {
-					int outputStreamId = outgoing_tuple.f0;
-					String outputStreamName = streamIdToName.get(outputStreamId);
-					Row row = outgoing_tuple.f1;
-					// Send tuple to subscribers
-					TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
-					for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
-							String topic = outputStreamName + "-" + otherNodeId;
-							System.out.println("Forwarding buffered tuples to topic " + topic);
-							nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
-					}
-			}
-			return "Success";
 		}
 
 		// Now we wait until the checkpoint is done
@@ -1702,20 +1683,24 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			System.exit(59);
 		}
 		System.out.println("Checkpoint is done");
+		File checkpointDirectoryFile = new File(checkpointDirectory);
 
-		// TODO: SEND FINAL CHECKPOINT
-		// TODO: SEND THE FINAL INCREMENTAL CHECKPOINT
-		File newestIncrementalCheckpoint = null;
-		int maxCheckpointNumber = 0;
-		for (File child : new File(checkpointDirectory).listFiles()) {
-			if (child.getName().startsWith("chk-")) {
-				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
-				if (checkpointNumber > maxCheckpointNumber) {
-					maxCheckpointNumber = checkpointNumber;
-					newestIncrementalCheckpoint = child;
-				}
-			}
-		}
+        File newestIncrementalCheckpoint = null;
+
+		long maxCheckpointNumber = CheckpointCoordinator.checkpointIdToMigrate2;
+		while (newestIncrementalCheckpoint == null) {
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            for (File child : checkpointDirectoryFile.listFiles()) {
+                if (child.getName().equals("chk-" + maxCheckpointNumber)) {
+                    newestIncrementalCheckpoint = child;
+                    break;
+                }
+            }
+        }
 		assert newestIncrementalCheckpoint != null;
 
 		System.out.println(System.currentTimeMillis() + ": Loading checkpoint " + newestIncrementalCheckpoint.getPath());
@@ -1725,14 +1710,18 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		final int[] filesSent = {0};
 		final int[] filesLoaded = {0};
 		AtomicBoolean loadedAllFiles = new AtomicBoolean(false);
-		// TODO: fix that loadedAllFiles finishes before extracting all chk-x files
 		new Thread(() -> {
 			File rootFile = new File(finalCheckpointDirectory);
-			System.out.println("rootFile: " + rootFile.getAbsolutePath());
-			System.out.println("Files: " + rootFile.listFiles().length);
-			int cnt = rootFile.listFiles().length;
-			while (cnt == 0 || cnt < rootFile.listFiles().length) {
-                cnt = rootFile.listFiles().length;
+			File metadataFile = null;
+			while (metadataFile == null || metadataFile.lastModified() + 100 > System.currentTimeMillis()) {
+			    if (metadataFile == null) {
+                    for (File f : rootFile.listFiles()) {
+                        if (f.getName().equals("_metadata")) {
+                            metadataFile = f;
+                            break;
+                        }
+                    }
+                }
                 try {
                     Thread.sleep(100);
                 } catch (InterruptedException e) {
@@ -1760,16 +1749,18 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		new Thread(() -> {
 			try {
-			    while (!sentFirstZip.get()) {
+			    while (!sentFirstZip.get() && CheckpointCoordinator.incrementalCheckpointing) {
 					Thread.yield();
 				}
+			    if (!CheckpointCoordinator.incrementalCheckpointing) {
+			        InitializeStateTransfer(new_host);
+                }
 				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
 					while (filesSent[0] >= filesLoaded[0]) {
 						Thread.yield();
 					}
 					FileToSend fts = filesToSend.get(filesSent[0]);
 					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
-
 					dos.get().writeLong(fts.file.length());
 					dos.get().write(fts.fileAsBytes);
 					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
@@ -1842,123 +1833,103 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		long ms_before_start_mutable = System.currentTimeMillis();
 		AtomicBoolean receivedAllFiles = new AtomicBoolean(false);
-		if (CheckpointCoordinator.incrementalCheckpointing) {
-			List<FileToReceive> receivedFiles = new ArrayList<>();
-			new Thread(() -> {
-				int index = 0;
-				while (!receivedAllFiles.get()) {
-					while (receivedFiles.size() == index) {
-						Thread.yield();
-					}
-					FileToReceive ftr = receivedFiles.get(index);
-					File checkpoint_file = new File(savepointPath + ftr.filename);
-					System.out.println("Received file " + savepointPath + ftr.filename);
-                    checkpoint_file.getParentFile().mkdirs();
-					try {
-						checkpoint_file.createNewFile();
-					} catch (IOException e) {
-						e.printStackTrace();
-					}
-					++index;
-				}
-			}).start();
+        List<FileToReceive> receivedFiles = new ArrayList<>();
+        System.out.println("Starting to receive files");
+        new Thread(() -> {
+            int index = 0;
+            while (!receivedAllFiles.get()) {
+                while (receivedFiles.size() == index) {
+                    Thread.yield();
+                }
+                FileToReceive ftr = receivedFiles.get(index);
+                File checkpoint_file = new File(savepointPath + ftr.filename);
+                System.out.println("Received file " + savepointPath + ftr.filename);
+                checkpoint_file.getParentFile().mkdirs();
+                try {
+                    checkpoint_file.createNewFile();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                ++index;
+            }
+        }).start();
 
-			try {
-				client_socket[0] = state_transfer_server.accept();
-				dis[0] = new DataInputStream(client_socket[0].getInputStream());
-				ms_start_immutable[0] = System.currentTimeMillis();
-				int sourceSavepointPathLength = dis[0].readInt();
-				//System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
-				StringBuilder sourceSavepointPathArray = new StringBuilder(sourceSavepointPathLength);
-				for (int i = 0; i < sourceSavepointPathLength; i++) {
-					sourceSavepointPathArray.append(dis[0].readChar());
-				}
-				System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
-				sourceSavepointPath[0] = sourceSavepointPathArray.toString();
-				System.out.println("sourceSavepoint: " + sourceSavepointPath[0]);
+        try {
+            client_socket[0] = state_transfer_server.accept();
+            dis[0] = new DataInputStream(client_socket[0].getInputStream());
+            ms_start_immutable[0] = System.currentTimeMillis();
+            int sourceSavepointPathLength = dis[0].readInt();
+            //System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
+            StringBuilder sourceSavepointPathArray = new StringBuilder(sourceSavepointPathLength);
+            for (int i = 0; i < sourceSavepointPathLength; i++) {
+                sourceSavepointPathArray.append(dis[0].readChar());
+            }
+            System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
+            sourceSavepointPath[0] = sourceSavepointPathArray.toString();
+            System.out.println("sourceSavepoint: " + sourceSavepointPath[0]);
+            int iterations = 1;
+            if (CheckpointCoordinator.incrementalCheckpointing) {
+                iterations = 2;
+            }
 
-				// TODO: Receive files
-				while (true) {
-					long fileLength = dis[0].readLong();
-					if (fileLength == -1) {
-						break;
-					}
-					byte[] fileAsBytes = new byte[(int)fileLength];
-                    System.out.println("File length: " + fileLength);
-					dis[0].readFully(fileAsBytes);
-					int filenameLength = dis[0].readInt();
-                    System.out.println("Filename length: " + filenameLength);
-					StringBuilder filename = new StringBuilder();
-					for (int i = 0; i < filenameLength; i++) {
-						filename.append(dis[0].readChar());
-                        System.out.println("Filename: " + filename);
-					}
+                for (int i = 0; i < iterations; i++) {
+                    // TODO: Receive files
+                    while (true) {
+                        System.out.println("Waiting for files");
+                        long fileLength = dis[0].readLong();
+                        System.out.println("File length: " + fileLength);
+                        if (fileLength == -1) {
+                            break;
+                        }
+                        byte[] fileAsBytes = new byte[(int) fileLength];
+                        System.out.println("File length: " + fileLength);
+                        dis[0].readFully(fileAsBytes);
+                        int filenameLength = dis[0].readInt();
+                        System.out.println("Filename length: " + filenameLength);
+                        StringBuilder filename = new StringBuilder();
+                        for (int j = 0; j < filenameLength; j++) {
+                            filename.append(dis[0].readChar());
+                            System.out.println("Filename: " + filename);
+                        }
 
-					FileToReceive receivedFile = new FileToReceive(filename.toString(), fileAsBytes);
-					receivedFiles.add(receivedFile);
-					File checkpointFile = new File(savepointPath + receivedFile.filename);
-					System.out.println("Received file " + receivedFiles.size() + ": " + savepointPath + receivedFile.filename);
-					//checkpointFile.getParentFile().mkdirs();
-					FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
-				}
-				// Now we have received all files
-				receivedAllFiles.set(true);
-				System.out.println("Received all static files");
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
+                        FileToReceive receivedFile = new FileToReceive(
+                                filename.toString(),
+                                fileAsBytes);
+                        receivedFiles.add(receivedFile);
+                        File checkpointFile = new File(savepointPath + receivedFile.filename);
+                        System.out.println(
+                                "Received file " + receivedFiles.size() + ": " + savepointPath
+                                        + receivedFile.filename);
+                        //checkpointFile.getParentFile().mkdirs();
+                        FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
+                    }
+                    // Now we have received all files
+                    receivedAllFiles.set(true);
+                    System.out.println("Received all static files");
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
 
+        long ms_mutable_unzipped = System.currentTimeMillis();
 
-			try {
-				// TODO: Receive files
-				while (true) {
-					long fileLength = dis[0].readLong();
-					System.out.println("Dynamic file length: " + fileLength);
-					if (fileLength == -1) {
-						break;
-					}
-					byte[] fileAsBytes = new byte[(int)fileLength];
-                    System.out.println("File length: " + fileLength);
-					dis[0].readFully(fileAsBytes);
-					int filenameLength = dis[0].readInt();
-                    System.out.println("Filename length: " + filenameLength);
-					StringBuilder filename = new StringBuilder();
-					for (int i = 0; i < filenameLength; i++) {
-						filename.append(dis[0].readChar());
-                        System.out.println("Filename: " + filename);
-					}
-
-					FileToReceive receivedFile = new FileToReceive(filename.toString(), fileAsBytes);
-					File checkpointFile = new File(savepointPath + receivedFile.filename);
-					System.out.println("Received file in " + savepointPath + receivedFile.filename);
-					//checkpointFile.getParentFile().mkdirs();
-					FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
-					receivedFiles.add(receivedFile);
-				}
-				System.out.println("Received all dynamic files");
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-		}
-		long ms_mutable_unzipped = System.currentTimeMillis();
-
-		// Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
-		File newestIncrementalCheckpoint = null;
-		int maxCheckpointNumber = 0;
-		File savepointPathFile = new File(savepointPath);
-		System.out.println("Iterating through checkpoints in " + savepointPath);
-		savepointPathFile.mkdirs();
-		for (File child : savepointPathFile.listFiles()) {
-			if (child.getName().startsWith("chk-")) {
-				int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
-				if (checkpointNumber > maxCheckpointNumber) {
-					maxCheckpointNumber = checkpointNumber;
-					newestIncrementalCheckpoint = child;
-				}
-			}
-		}
-		assert newestIncrementalCheckpoint != null;
-		savepointPath = newestIncrementalCheckpoint.getPath();
+        // Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
+        File newestIncrementalCheckpoint = null;
+        int maxCheckpointNumber = 0;
+        File savepointPathFile = new File(savepointPath);
+        System.out.println("Iterating through checkpoints in " + savepointPath);
+        savepointPathFile.mkdirs();
+        for (File child : savepointPathFile.listFiles()) {
+            if (child.getName().startsWith("chk-")) {
+                int checkpointNumber = Integer.parseInt(child.getName().split("-")[1]);
+                if (checkpointNumber > maxCheckpointNumber) {
+                    maxCheckpointNumber = checkpointNumber;
+                    newestIncrementalCheckpoint = child;
+                }
+            }
+        }
+        assert newestIncrementalCheckpoint != null;
+        savepointPath = newestIncrementalCheckpoint.getPath();
 
 		System.out.println("Restoring query state from savepoint " + savepointPath);
 		// Restore the snapshot
@@ -1979,7 +1950,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Time between receiving the immutable state and the start of receiving the mutable state " + (ms_start_mutable - ms_before_start_mutable) + " ms");
 
 		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_start_mutable) + " ms");
-		System.out.println("Unzipping mutable state took " + (ms_mutable_unzipped - ms_stop_mutable) + " ms");
+		//System.out.println("Unzipping mutable state took " + (ms_mutable_unzipped - ms_stop_mutable) + " ms");
 
 		System.out.println("Loading the checkpoint took " + (ms_stop - ms_mutable_unzipped) + " ms");
 		return "Success";

@@ -127,13 +127,16 @@ public class CheckpointCoordinator {
 
     /** Map from checkpoint ID to the pending checkpoint. */
     @GuardedBy("lock")
-    private final Map<Long, PendingCheckpoint> pendingCheckpoints;
+    public final Map<Long, PendingCheckpoint> pendingCheckpoints;
+
+    public static long checkpointIdToMigrate1 = 1;
+    public static long checkpointIdToMigrate2 = 1;
 
     /**
      * Completed checkpoints. Implementations can be blocking. Make sure calls to methods accessing
      * this don't block the job manager actor and run asynchronously.
      */
-    private final CompletedCheckpointStore completedCheckpointStore;
+    public final CompletedCheckpointStore completedCheckpointStore;
 
     /**
      * The root checkpoint state backend, which is responsible for initializing the checkpoint,
@@ -228,6 +231,8 @@ public class CheckpointCoordinator {
     private final ExecutionAttemptMappingProvider attemptMappingProvider;
 
     public static CheckpointCoordinator checkpointCoordinator;
+
+    public static boolean migrationCheckpointCompleted = false;
 
     // --------------------------------------------------------------------------------------------
 
@@ -1286,6 +1291,8 @@ public class CheckpointCoordinator {
                 pendingCheckpoint.getCheckpointPlan().getTasksToCommitTo(),
                 checkpointId,
                 completedCheckpoint.getTimestamp());
+
+        migrationCheckpointCompleted = true;
     }
 
     void scheduleTriggerRequest() {
@@ -1869,7 +1876,7 @@ public class CheckpointCoordinator {
 
     // ------------------------------------------------------------------------
 
-    public static boolean incrementalCheckpointing = true;
+    public static boolean incrementalCheckpointing = false;
     int cnt = 1;
     public static int nodeId = -1;
     public void watchMigrationFile() throws IOException, InterruptedException {
@@ -1893,6 +1900,21 @@ public class CheckpointCoordinator {
 
             // first means we still haven't started the final checkpoint before migration
             // pendingCheckpoints not being empty means we still have checkpoints in progress
+            try {
+                CompletedCheckpoint latestCheckpoint = completedCheckpointStore.getLatestCheckpoint(false);
+                if (latestCheckpoint != null) {
+                    checkpointIdToMigrate1 = latestCheckpoint.getCheckpointID() + 1;
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            if (!pendingCheckpoints.isEmpty()) {
+                for (long checkpointId : pendingCheckpoints.keySet()) {
+                    if (checkpointId >= checkpointIdToMigrate1) {
+                        checkpointIdToMigrate1 = checkpointId + 1;
+                    }
+                }
+            }
             while ((first || this.checkpointInProgress)) {
                 Thread.sleep(1000);
                 System.out.println(first + "-" + checkpointInProgress);
@@ -1914,6 +1936,21 @@ public class CheckpointCoordinator {
 
         WatchKey key = watchService.take();
         System.out.println("Now triggering the last checkpoint. Key: " + key);
+        try {
+            CompletedCheckpoint latestCheckpoint = completedCheckpointStore.getLatestCheckpoint(false);
+            if (latestCheckpoint != null) {
+                checkpointIdToMigrate2 = latestCheckpoint.getCheckpointID() + 1;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        if (!pendingCheckpoints.isEmpty()) {
+            for (long checkpointId : pendingCheckpoints.keySet()) {
+                if (checkpointId >= checkpointIdToMigrate2) {
+                    checkpointIdToMigrate2 = checkpointId + 1;
+                }
+            }
+        }
         waitingForFinalCheckpoint = true;
 
         // !createdFinalCheckpoint means we still haven't run the function to create the final checkpoint
