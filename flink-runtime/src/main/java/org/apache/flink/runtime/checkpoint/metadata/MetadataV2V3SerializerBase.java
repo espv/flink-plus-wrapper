@@ -511,10 +511,8 @@ public abstract class MetadataV2V3SerializerBase {
             long size = dis.readLong();
             String pathString = dis.readUTF();
             String[] pathArray = pathString.split("/");
-            pathString = System.getenv("FLINK_BINARIES") + "/savepoints/received_savepoints/";
+            pathString = System.getenv("STATE_FOLDER") + "/savepoints/received_savepoints/";
             pathString += pathArray[pathArray.length-3] + "/" + pathArray[pathArray.length-2] + "/" + pathArray[pathArray.length-1];
-            // TODO: Modify pathString so that we get the path-name but replace the prefixed path with the FLINK_BINARIES path of this machine, AND that the path points to received_savepoints and not created_savepoints.
-            // TODO: The easiest for now is to replace created_savepoints with received_savepoints, but that's not portable. However, neither is the suggestion above. We'd need to use a different set of methods.
             System.out.println("New location for checkpoint is " + pathString);
             return new FileStateHandle(new Path(pathString), size);
         } else if (BYTE_STREAM_STATE_HANDLE == type) {
