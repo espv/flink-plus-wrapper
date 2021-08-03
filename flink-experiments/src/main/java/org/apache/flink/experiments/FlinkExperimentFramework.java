@@ -1520,7 +1520,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		long ms_before_start_mutable = System.currentTimeMillis();
 		AtomicBoolean receivedAllFiles = new AtomicBoolean(false);
         List<FileToReceive> receivedFiles = new ArrayList<>();
-        System.out.println("Starting to receive files");
+        System.out.println(System.currentTimeMillis() + ": Starting to receive files");
         new Thread(() -> {
             int index = 0;
             while (!receivedAllFiles.get()) {
@@ -1561,21 +1561,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
             for (String typeFiles : typeFilesToSend) {
                 while (true) {
-                    System.out.println("Waiting for " + typeFiles + " files");
+                    System.out.println(System.currentTimeMillis() + ": Waiting for " + typeFiles + " files");
                     long fileLength = dis[0].readLong();
-                    System.out.println("File length: " + fileLength);
                     if (fileLength == -1) {
                         break;
                     }
                     byte[] fileAsBytes = new byte[(int) fileLength];
-                    System.out.println("File length: " + fileLength);
                     dis[0].readFully(fileAsBytes);
                     int filenameLength = dis[0].readInt();
-                    System.out.println("Filename length: " + filenameLength);
                     StringBuilder filename = new StringBuilder();
                     for (int j = 0; j < filenameLength; j++) {
                         filename.append(dis[0].readChar());
-                        System.out.println("Filename: " + filename);
                     }
 
                     FileToReceive receivedFile = new FileToReceive(
@@ -1583,15 +1579,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                             fileAsBytes);
                     receivedFiles.add(receivedFile);
                     File checkpointFile = new File(savepointPath + receivedFile.filename);
-                    System.out.println(
-                            "Received file " + receivedFiles.size() + ": " + savepointPath
-                                    + receivedFile.filename);
                     //checkpointFile.getParentFile().mkdirs();
                     FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
                 }
                 // Now we have received all files
                 receivedAllFiles.set(true);
-                System.out.println("Received all " + typeFiles + " files");
+                System.out.println(System.currentTimeMillis() + ": Received all " + typeFiles + " files");
             }
         } catch (IOException e) {
             e.printStackTrace();
