@@ -1574,15 +1574,15 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
             System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
             sourceSavepointPath[0] = sourceSavepointPathArray.toString();
             System.out.println("sourceSavepoint: " + sourceSavepointPath[0]);
-            int iterations = 1;
+            List<String> typeFilesToSend = new ArrayList<>();
             if (CheckpointCoordinator.incrementalCheckpointing) {
-                iterations = 2;
+                typeFilesToSend.add("static");
             }
+            typeFilesToSend.add("dynamic");
 
-            for (int i = 0; i < iterations; i++) {
-                // TODO: Receive files
+            for (String typeFiles : typeFilesToSend) {
                 while (true) {
-                    System.out.println("Waiting for files");
+                    System.out.println("Waiting for " + typeFiles + " files");
                     long fileLength = dis[0].readLong();
                     System.out.println("File length: " + fileLength);
                     if (fileLength == -1) {
@@ -1612,7 +1612,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 }
                 // Now we have received all files
                 receivedAllFiles.set(true);
-                System.out.println("Received all static files");
+                System.out.println("Received all " + typeFiles + " files");
             }
         } catch (IOException e) {
             e.printStackTrace();
