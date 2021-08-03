@@ -66,6 +66,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	int interval_wait;
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
 	boolean useRowtime = false;
+	boolean incrementalCheckpointing = false;
 	String trace_output_folder;
 	static boolean migrationInProgress = false;
 	StreamExecutionEnvironment env;
@@ -126,6 +127,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	ServerSocket state_transfer_server = null;
 
 	FlinkExperimentFramework() {
+	    CheckpointCoordinator.incrementalCheckpointing = this.incrementalCheckpointing;
 		props = new Properties();
 		props.put("bootstrap.servers", "localhost:9092");
 		props.put("group.id", "Group 1");
@@ -346,39 +348,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 			@Override
 			public void flatMap(Row row, Collector<Row> out) {
-				//System.out.println("Received tuple");
-				/*if (stream_id == 0) {
-					String raw_stream_id_list = (String) event.getData()[0];
-					List<Integer> stream_id_list = new ArrayList<>();
-					for (String string_stream_id : raw_stream_id_list.split(", ")) {
-						stream_id_list.add(Integer.parseInt(string_stream_id));
-					}
-					int sending_node_id = (int) event.getData()[1];
-					if (!nodeIdToStoppedStreams.containsKey(sending_node_id)) {
-						nodeIdToStoppedStreams.put(sending_node_id, new ArrayList<>());
-					}
-					nodeIdToStoppedStreams.get(sending_node_id).addAll(stream_id_list);
-				} else */
-
-				/*if (streamIdToNodeIds.containsKey(stream_id)) {
-					System.out.println("Immediately forwarding received tuple");
-					// TODO: Forward tuples if there are next hops
-					TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
-					for (int otherNodeId : streamIdToNodeIds.get(stream_id)) {
-						String topic = stream_name + "-" + otherNodeId;
-						System.out.println("Forwarding tuples to topic " + topic);
-						nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
-					}
-				} else */
-                if (migrationInProgress) {
-                    String outputStreamName = streamIdToName.get(stream_id);
-                    // Send tuple to subscribers
-                    TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
-                    for (int otherNodeId : streamIdToNodeIds.get(stream_id)) {
-                        String topic = outputStreamName + "-" + otherNodeId;
-                        nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
-                    }
-                } else if (streamIdActive.getOrDefault(stream_id, true)) {
+				if (streamIdActive.getOrDefault(stream_id, true)) {
 					out.collect(row);
 				} else if (streamIdBuffer.getOrDefault(stream_id, false)) {
 					incomingTupleBuffer.add(new Tuple2<>(stream_id, row));
@@ -465,9 +435,13 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (Map<String, Object> tuple : tuples) {
 			AddTuples(tuple, tuples_to_send,1);
 		}
+        Map<Integer, Integer> nodesSentTo = new HashMap<>();
 		for (int i = 0; i < iterations; i++) {
-			ProcessTuples(tuples_to_send, false);
+			ProcessTuples(tuples_to_send, false, nodesSentTo);
 		}
+        for (int node_id : nodesSentTo.keySet()) {
+            System.out.println("Sent " + nodesSentTo.get(node_id) + " tuples to Node " + node_id);
+        }
 		System.out.println( System.nanoTime() + ": Sent " + (tupleCnt) + " tuples");
 		return "Success";
 	}
@@ -789,13 +763,19 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-        RocksDBStateBackend rocksdb = null;
-        try {
-            rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
-        } catch (IOException e) {
-            e.printStackTrace();
+        if (incrementalCheckpointing) {
+            RocksDBStateBackend rocksdb = null;
+            try {
+                rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, incrementalCheckpointing);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            env.setStateBackend(rocksdb);
+        } else {
+            FsStateBackend fsStateBackend;
+            fsStateBackend = new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
+            env.setStateBackend(fsStateBackend);
         }
-        env.setStateBackend(rocksdb);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -973,13 +953,19 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-        RocksDBStateBackend rocksdb = null;
-        try {
-            rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, CheckpointCoordinator.incrementalCheckpointing);
-        } catch (IOException e) {
-            e.printStackTrace();
+        if (incrementalCheckpointing) {
+            RocksDBStateBackend rocksdb = null;
+            try {
+                rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, incrementalCheckpointing);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            env.setStateBackend(rocksdb);
+        } else {
+            FsStateBackend fsStateBackend;
+            fsStateBackend = new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
+            env.setStateBackend(fsStateBackend);
         }
-        env.setStateBackend(rocksdb);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -1013,9 +999,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	int tupleCnt = 0;
 	RandomString rs = new RandomString(4);
-	public String ProcessTuples(List<Tuple2<Integer, Row>> tuples_to_send, boolean clear_tuples) {
+	public String ProcessTuples(List<Tuple2<Integer, Row>> tuples_to_send, boolean clear_tuples, Map<Integer, Integer> nodesSentTo) {
 		//System.out.println("Processing " + tuples_to_send.size() + ", or more correctly: " + tuples_to_send.size() + " tuples");
-		Map<Integer, Integer> nodesSentTo = new HashMap<>();
         for (int i = 0; i < tuples_to_send.size(); i++) {
 			Tuple2<Integer, Row> tuple = tuples_to_send.get(i);
 			int stream_id = tuple.f0;
@@ -1046,9 +1031,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		if (clear_tuples) {
 			tuples_to_send.clear();
 		}
-		for (int node_id : nodesSentTo.keySet()) {
-		    System.out.println("Sent " + nodesSentTo.get(node_id) + " tuples to Node " + node_id);
-        }
 		pktsPublished = 0;
 		return "Success";
 	}
@@ -1368,7 +1350,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String MoveDynamicQueryState(int query_id, int new_host) {
 		File lockFile2;
-        migrationInProgress = true;
 		long ms_start = System.currentTimeMillis();
 		String checkpointDirectory = null;
 
