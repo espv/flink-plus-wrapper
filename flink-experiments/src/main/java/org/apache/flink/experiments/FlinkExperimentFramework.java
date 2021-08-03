@@ -68,7 +68,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	boolean useRowtime = false;
 	boolean incrementalCheckpointing = false;
 	String trace_output_folder;
-	static boolean migrationInProgress = false;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
 	EnvironmentSettings fsSettings = EnvironmentSettings.newInstance().useOldPlanner().inStreamingMode().build();
@@ -1352,7 +1351,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		File lockFile2;
 		long ms_start = System.currentTimeMillis();
 		String checkpointDirectory = null;
-
         checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
         savepointPath = checkpointDirectory;
 		lockFile2 = new File("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint/" + getJobID());
@@ -1697,8 +1695,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String RelayStream(List<Integer> stream_id_list, List<Integer> old_host_list, List<Integer> new_host_list) {
-		RemoveNextHop(stream_id_list, old_host_list);
-		AddNextHop(stream_id_list, new_host_list);
+        synchronized (streamIdToNodeIds) {
+            RemoveNextHop(stream_id_list, old_host_list);
+            AddNextHop(stream_id_list, new_host_list);
+        }
 		return "Success";
 	}
 
