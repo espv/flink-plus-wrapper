@@ -252,6 +252,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>> extends Ab
 
     private final CompletableFuture<Void> terminationFuture = new CompletableFuture<>();
 
+    public static long lastStreamTaskInitialized = 0;
+
     // ------------------------------------------------------------------------
 
     /**
@@ -571,6 +573,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>> extends Ab
                 "Mailbox loop interrupted before recovery was finished.");
 
         isRunning = true;
+        StreamTask.lastStreamTaskInitialized = System.currentTimeMillis();
     }
 
     private CompletableFuture<Void> restoreGates() throws Exception {

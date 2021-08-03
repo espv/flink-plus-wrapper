@@ -31,6 +31,7 @@ import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
+import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
@@ -101,7 +102,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	List<FlinkKafkaConsumer<Row>> consumers = new ArrayList<>();
 	long timestampForKafkaConsumer = 0;
 	long millisecond100Offset = 0;
-	FsStateBackend fsStateBackend;
+	public static long timeRuntimeStarted = 0;
 
 	SpeTaskHandler speComm;
 
@@ -932,6 +933,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		});
 		interrupted = false;
 		threadRunningEnvironment.start();
+        timeRuntimeStarted = System.currentTimeMillis();
 		return "Success";
 	}
 
@@ -946,6 +948,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String StopRuntimeEnv() {
 		tf.traceEvent(101);
         env.getJobClient().cancel();
+        System.out.println("Time between starting the runtime environment and the last StreamTask being initialized: " + (
+                StreamTask.lastStreamTaskInitialized - timeRuntimeStarted) + " ms");
+        System.out.println("Time that the system was restored: " + StreamTask.lastStreamTaskInitialized);
 
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
