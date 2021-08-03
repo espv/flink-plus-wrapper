@@ -1619,7 +1619,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		StopRuntimeEnv();
 		env.setSavepointRestoreSettings(savepointRestoreSettings);
 		DoStartRuntimeEnv();
-		long ms_stop = System.currentTimeMillis();
 		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
 			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 		}
@@ -1631,7 +1630,27 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_start_mutable) + " ms");
 		//System.out.println("Unzipping mutable state took " + (ms_mutable_unzipped - ms_stop_mutable) + " ms");
 
-		System.out.println("Loading the checkpoint took " + (ms_stop - ms_mutable_unzipped) + " ms");
+        new Thread(() -> {
+            boolean runtimeStarted = false;
+            System.out.println(System.currentTimeMillis() + ": Starting waiting for runtime system to start");
+            while (this.env.getJobClient() == null || !runtimeStarted) {
+                try {
+                    Thread.sleep(1);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                if (this.env.getJobClient() == null) {
+                    continue;
+                }
+                try {
+                    runtimeStarted = this.env.getJobClient().getJobStatus().get() == JobStatus.RUNNING;
+                } catch (InterruptedException | ExecutionException e) {
+                    e.printStackTrace();
+                }
+            }
+            long ms_stop = System.currentTimeMillis();
+            System.out.println(System.currentTimeMillis() + ": Loading the checkpoint took " + (ms_stop - ms_mutable_unzipped) + " ms");
+        }).start();
 		return "Success";
 	}
 
