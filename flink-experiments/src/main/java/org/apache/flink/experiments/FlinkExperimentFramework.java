@@ -1579,40 +1579,40 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 iterations = 2;
             }
 
-                for (int i = 0; i < iterations; i++) {
-                    // TODO: Receive files
-                    while (true) {
-                        System.out.println("Waiting for files");
-                        long fileLength = dis[0].readLong();
-                        System.out.println("File length: " + fileLength);
-                        if (fileLength == -1) {
-                            break;
-                        }
-                        byte[] fileAsBytes = new byte[(int) fileLength];
-                        System.out.println("File length: " + fileLength);
-                        dis[0].readFully(fileAsBytes);
-                        int filenameLength = dis[0].readInt();
-                        System.out.println("Filename length: " + filenameLength);
-                        StringBuilder filename = new StringBuilder();
-                        for (int j = 0; j < filenameLength; j++) {
-                            filename.append(dis[0].readChar());
-                            System.out.println("Filename: " + filename);
-                        }
-
-                        FileToReceive receivedFile = new FileToReceive(
-                                filename.toString(),
-                                fileAsBytes);
-                        receivedFiles.add(receivedFile);
-                        File checkpointFile = new File(savepointPath + receivedFile.filename);
-                        System.out.println(
-                                "Received file " + receivedFiles.size() + ": " + savepointPath
-                                        + receivedFile.filename);
-                        //checkpointFile.getParentFile().mkdirs();
-                        FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
+            for (int i = 0; i < iterations; i++) {
+                // TODO: Receive files
+                while (true) {
+                    System.out.println("Waiting for files");
+                    long fileLength = dis[0].readLong();
+                    System.out.println("File length: " + fileLength);
+                    if (fileLength == -1) {
+                        break;
                     }
-                    // Now we have received all files
-                    receivedAllFiles.set(true);
-                    System.out.println("Received all static files");
+                    byte[] fileAsBytes = new byte[(int) fileLength];
+                    System.out.println("File length: " + fileLength);
+                    dis[0].readFully(fileAsBytes);
+                    int filenameLength = dis[0].readInt();
+                    System.out.println("Filename length: " + filenameLength);
+                    StringBuilder filename = new StringBuilder();
+                    for (int j = 0; j < filenameLength; j++) {
+                        filename.append(dis[0].readChar());
+                        System.out.println("Filename: " + filename);
+                    }
+
+                    FileToReceive receivedFile = new FileToReceive(
+                            filename.toString(),
+                            fileAsBytes);
+                    receivedFiles.add(receivedFile);
+                    File checkpointFile = new File(savepointPath + receivedFile.filename);
+                    System.out.println(
+                            "Received file " + receivedFiles.size() + ": " + savepointPath
+                                    + receivedFile.filename);
+                    //checkpointFile.getParentFile().mkdirs();
+                    FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
+                }
+                // Now we have received all files
+                receivedAllFiles.set(true);
+                System.out.println("Received all static files");
             }
         } catch (IOException e) {
             e.printStackTrace();
