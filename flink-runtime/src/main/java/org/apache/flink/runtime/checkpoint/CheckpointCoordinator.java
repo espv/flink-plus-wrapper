@@ -129,9 +129,6 @@ public class CheckpointCoordinator {
     @GuardedBy("lock")
     public final Map<Long, PendingCheckpoint> pendingCheckpoints;
 
-    public static long checkpointIdToMigrate1 = 1;
-    public static long checkpointIdToMigrate2 = 1;
-
     /**
      * Completed checkpoints. Implementations can be blocking. Make sure calls to methods accessing
      * this don't block the job manager actor and run asynchronously.
@@ -284,14 +281,6 @@ public class CheckpointCoordinator {
             CheckpointPlanCalculator checkpointPlanCalculator,
             ExecutionAttemptMappingProvider attemptMappingProvider,
             Clock clock) {
-
-        new Thread(() -> {
-            try {
-                watchMigrationFile();
-            } catch (IOException | InterruptedException e) {
-                e.printStackTrace();
-            }
-        }).start();
 
         // sanity checks
         checkNotNull(checkpointStorage);
@@ -1875,83 +1864,6 @@ public class CheckpointCoordinator {
     }
 
     // ------------------------------------------------------------------------
-
-    public static boolean incrementalCheckpointing = false;
-    int cnt = 1;
-    public static int nodeId = -1;
-    public void watchMigrationFile() throws IOException, InterruptedException {
-        System.out.println("Starting watchMigrationFile");
-        while (nodeId == -1) {
-            Thread.yield();
-        }
-
-        if (incrementalCheckpointing) {
-            WatchService watchService = FileSystems.getDefault().newWatchService();
-
-            java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-migration-in-progress");
-
-            path.register(
-                    watchService,
-                    StandardWatchEventKinds.ENTRY_CREATE);
-            WatchKey key = watchService.take();
-            System.out.println("Migration in progress? Key: " + key);
-            System.out.println("Triggering migration");
-            migrationInProgress = true;
-
-            // first means we still haven't started the final checkpoint before migration
-            // pendingCheckpoints not being empty means we still have checkpoints in progress
-            try {
-                CompletedCheckpoint latestCheckpoint = completedCheckpointStore.getLatestCheckpoint(false);
-                if (latestCheckpoint != null) {
-                    checkpointIdToMigrate1 = latestCheckpoint.getCheckpointID() + 1;
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-            if (!pendingCheckpoints.isEmpty()) {
-                for (long checkpointId : pendingCheckpoints.keySet()) {
-                    if (checkpointId >= checkpointIdToMigrate1) {
-                        checkpointIdToMigrate1 = checkpointId + 1;
-                    }
-                }
-            }
-            triggerCheckpoint(false);
-
-            System.out.println("Now triggering the last checkpoint2. Key: " + key);
-            new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
-        }
-        migrationInProgress = true;
-
-        WatchService watchService = FileSystems.getDefault().newWatchService();
-
-        System.out.println("Waiting for file in " + "/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
-        java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
-        path.register(
-                watchService,
-                StandardWatchEventKinds.ENTRY_CREATE);
-
-        WatchKey key = watchService.take();
-        System.out.println("Now triggering the last checkpoint. Key: " + key);
-        try {
-            CompletedCheckpoint latestCheckpoint = completedCheckpointStore.getLatestCheckpoint(false);
-            if (latestCheckpoint != null) {
-                checkpointIdToMigrate2 = latestCheckpoint.getCheckpointID() + 1;
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        if (!pendingCheckpoints.isEmpty()) {
-            for (long checkpointId : pendingCheckpoints.keySet()) {
-                if (checkpointId >= checkpointIdToMigrate2) {
-                    checkpointIdToMigrate2 = checkpointId + 1;
-                }
-            }
-        }
-        forceExclusiveFlag = true;
-        triggerCheckpoint(false);
-        new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
-        System.out.println("Created the file /tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job);
-    }
 
     public boolean forceExclusiveFlag = false;
     public boolean migrationInProgress = false;
