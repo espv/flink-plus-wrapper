@@ -1915,17 +1915,13 @@ public class CheckpointCoordinator {
                     }
                 }
             }
-            while ((first || this.checkpointInProgress)) {
-                Thread.sleep(1000);
-                System.out.println(first + "-" + checkpointInProgress);
-                Thread.yield();
-            }
+            triggerCheckpoint(false);
+
             System.out.println("Now triggering the last checkpoint2. Key: " + key);
             new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
         }
         migrationInProgress = true;
 
-        //System.out.println("Now triggering the last checkpoint3. Key: " + key);
         WatchService watchService = FileSystems.getDefault().newWatchService();
 
         System.out.println("Waiting for file in " + "/tmp/expose-flink-" + nodeId + "-waiting-for-final-checkpoint");
@@ -1951,15 +1947,8 @@ public class CheckpointCoordinator {
                 }
             }
         }
-        waitingForFinalCheckpoint = true;
-
-        // !createdFinalCheckpoint means we still haven't run the function to create the final checkpoint
-        // pendingCheckpoints not being empty means we still have checkpoints in progress
-        while (!createdFinalCheckpoint || this.checkpointInProgress) {
-            Thread.sleep(1000);
-            System.out.println(createdFinalCheckpoint + "-" + checkpointInProgress);
-            Thread.yield();
-        }
+        forceExclusiveFlag = true;
+        triggerCheckpoint(false);
         new File("/tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job + "-" + (cnt++)).createNewFile();
         System.out.println("Created the file /tmp/expose-flink-" + nodeId + "-checkpoints-done/" + this.job);
     }
@@ -1978,21 +1967,8 @@ public class CheckpointCoordinator {
             if (!checkpointing_enabled) {
                 return;
             }
-            // Return if migration is in progress
+            // Return if migration is in progress because we trigger checkpoints manually
             if (migrationInProgress) {
-                if (first && incrementalCheckpointing) {
-                    System.out.println("Triggering final checkpoint before migration");
-                    triggerCheckpoint(false);
-                    first = false;
-                    return;
-                }
-                if (waitingForFinalCheckpoint && !createdFinalCheckpoint) {
-                    System.out.println("Triggering final incremental checkpoint during migration");
-                    forceExclusiveFlag = true;
-                    triggerCheckpoint(false);
-                    createdFinalCheckpoint = true;
-                    return;
-                }
                 return;
             }
             try {
