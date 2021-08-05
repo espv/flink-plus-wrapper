@@ -1438,7 +1438,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}).start();
 
 		long ms_stop_preparing = System.currentTimeMillis();
-		System.out.println("Extracting and preparing the state took " + (ms_stop_preparing-ms_start));
+		System.out.println("Extracting and preparing the dynamic state took " + (ms_stop_preparing-ms_start));
 
 		new Thread(() -> {
 			try {
@@ -1534,6 +1534,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 while (receivedFiles.size() == index) {
                     Thread.yield();
                 }
+                long start = System.currentTimeMillis();
                 FileToReceive ftr = receivedFiles.get(index);
                 File checkpoint_file = new File(savepointPath + ftr.filename);
                 System.out.println("Received file " + savepointPath + ftr.filename);
@@ -1544,6 +1545,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     e.printStackTrace();
                 }
                 ++index;
+                System.out.println("Time to write file after receiving it: " + (System.currentTimeMillis() - start));
             }
         }).start();
 
@@ -1569,6 +1571,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 while (true) {
                     System.out.println(System.currentTimeMillis() + ": Waiting for " + typeFiles + " files");
                     long fileLength = dis[0].readLong();
+                    if (typeFiles.equals("static")) {
+                        ms_start_immutable = System.currentTimeMillis();
+                    } else if (typeFiles.equals("dynamic")) {
+                        ms_start_mutable = System.currentTimeMillis();
+                    }
+
                     if (fileLength == -1) {
                         break;
                     }
@@ -1594,9 +1602,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 } else if (typeFiles.equals("dynamic")) {
                     ms_stop_mutable = System.currentTimeMillis();
                 }
-                receivedAllFiles.set(true);
                 System.out.println(System.currentTimeMillis() + ": Received all " + typeFiles + " files");
             }
+            receivedAllFiles.set(true);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -1632,7 +1640,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 		}
 		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable) + " ms");
-		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_stop_immutable) + " ms");
+		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_start_mutable) + " ms");
 		return "Success";
 	}
 
