@@ -1338,16 +1338,18 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			// Now we have sent the snapshot to the new host
 			// The new host will receive in the task how many bytes it must receive on its socket
 			sentFirstZip.set(true);
-			long timeSentStaticFiles = System.currentTimeMillis();
-			System.out.println("Time to extract static state: " + (timeExtractedStaticState - ms_start));
-			System.out.println("Time to load and send static state: " + (timeSentStaticFiles - timeExtractedStaticState));
 		}).start();
 
-		long ms_stop1 = System.currentTimeMillis();
 		while (!sentFirstZip.get()) {
-			Thread.yield();
-		}
-		long ms_stop2 = System.currentTimeMillis();
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        long timeSentStaticFiles = System.currentTimeMillis();
+        System.out.println("Time to extract static state: " + (timeExtractedStaticState - ms_start));
+        System.out.println("Time to load and send static state: " + (timeSentStaticFiles - timeExtractedStaticState));
 		return "Success";
 	}
 
