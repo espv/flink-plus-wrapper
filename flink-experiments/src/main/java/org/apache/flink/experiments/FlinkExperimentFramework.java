@@ -1280,10 +1280,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			File rootFile = new File(finalCheckpointDirectory);
 			for (File directory : rootFile.listFiles()) {
 				assert directory.isDirectory();
-				/*if (directory.getName().startsWith("chk-")) {
+				if (directory.getName().startsWith("chk-")) {
 					// We don't send incremental checkpoints here
 					continue;
-				}*/
+				}
                 for (File file : directory.listFiles()) {
 					assert file.isFile();
 					// This means that we can load 10 more files than we have sent
