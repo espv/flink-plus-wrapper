@@ -1304,6 +1304,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			// Begin to set up state transfer connection
             InitializeStateTransfer(new_host);
 			try {
+                long totalStaticStateSizeSent = 0;
 				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
 					while (filesSent[0] >= filesLoaded[0]) {
 						Thread.yield();
@@ -1312,6 +1313,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
 
 					dos.get().writeLong(fts.file.length());
+                    totalStaticStateSizeSent += fts.file.length();
 					dos.get().write(fts.fileAsBytes);
 					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
 					// Remove the prefix that is common in the file path and the root checkpoint directory
@@ -1328,7 +1330,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					dos.get().writeChars(relativePath.toString());
 					++filesSent[0];
 				}
-				System.out.println("Sent all static files");
+				System.out.println("Sent all static files, total size: " + totalStaticStateSizeSent);
 				// -1 means that no file remains
 				dos.get().writeLong(-1);
 
@@ -1448,6 +1450,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			    if (!CheckpointCoordinator.incrementalCheckpointing) {
 			        InitializeStateTransfer(new_host);
                 }
+                long totalDynamicStateSizeSent = 0;
 				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
 					while (filesSent[0] >= filesLoaded[0]) {
 						Thread.yield();
@@ -1455,6 +1458,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					FileToSend fts = filesToSend.get(filesSent[0]);
 					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
 					dos.get().writeLong(fts.file.length());
+                    totalDynamicStateSizeSent += fts.file.length();
 					dos.get().write(fts.fileAsBytes);
 					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
 					// Remove the prefix that is common in the file path and the root checkpoint directory
@@ -1474,7 +1478,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				// -1 means that no file remains
 				dos.get().writeLong(-1);
                 long ms_stop = System.currentTimeMillis();
-				System.out.println("Sent all dynamic files");
+				System.out.println("Sent all dynamic files, total state size: " + totalDynamicStateSizeSent);
                 System.out.println("Sending dynamic state took " + (ms_stop-ms_stop_preparing) + " ms");
 
 			} catch (IOException e) {
