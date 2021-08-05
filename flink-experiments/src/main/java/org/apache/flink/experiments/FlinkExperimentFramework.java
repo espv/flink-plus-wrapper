@@ -64,7 +64,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	int interval_wait;
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
 	boolean useRowtime = false;
-	boolean incrementalCheckpointing = false;
+	boolean incrementalCheckpointing = true;
 	String trace_output_folder;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
@@ -1274,6 +1274,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         } catch (Exception e) {
             e.printStackTrace();
         }
+        long timeExtractedStaticState = System.currentTimeMillis();
         System.out.println("Checkpoint is done. Now we send it");
         new Thread(() -> {
 			File rootFile = new File(finalCheckpointDirectory);
@@ -1337,6 +1338,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			// Now we have sent the snapshot to the new host
 			// The new host will receive in the task how many bytes it must receive on its socket
 			sentFirstZip.set(true);
+			long timeSentStaticFiles = System.currentTimeMillis();
+			System.out.println("Time to extract static state: " + (timeExtractedStaticState - ms_start));
+			System.out.println("Time to load and send static state: " + (timeSentStaticFiles - timeExtractedStaticState));
 		}).start();
 
 		long ms_stop1 = System.currentTimeMillis();
@@ -1344,7 +1348,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Thread.yield();
 		}
 		long ms_stop2 = System.currentTimeMillis();
-		System.out.println(System.currentTimeMillis() + ": Preparing state took " + (ms_stop1-ms_start) + "ms, and in addition to sending it took " + (ms_stop2-ms_start) + "ms");
 		return "Success";
 	}
 
