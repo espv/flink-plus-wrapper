@@ -59,6 +59,7 @@ import static java.lang.Math.abs;
 public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, Serializable {
 	private static final Logger LOG = LoggerFactory.getLogger(FlinkExperimentFramework.class);
 	static long timeLastRecvdTuple = 0;
+	static long timeLastPrintedReceivedTuple = 0;
 	int batch_size;
 	int pktsPublished;
 	int interval_wait;
@@ -310,15 +311,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
             @Override
             public void invoke(Row value) {
                 long newTime = System.currentTimeMillis();
+                timeLastRecvdTuple = newTime;
                 ++cnt[0];
                 //System.out.println("Received row: " + value);
                 //System.out.println("Received tuple " + cnt[0] + ": " + value);
                 // We only log once every maximum one second, to avoid too many tracepoints
-                if (newTime - timeLastRecvdTuple > TIMELASTRECEIVEDTHRESHOLD) {
+                if (newTime - timeLastPrintedReceivedTuple > TIMELASTRECEIVEDTHRESHOLD) {
 					LOG.info("Received tuple {}", cnt[0]);
 					System.out.println("Received tuple " + cnt[0] + ": " + value + " at "
 							+ System.currentTimeMillis());
-					timeLastRecvdTuple = newTime;
+					timeLastPrintedReceivedTuple = timeLastRecvdTuple;
                 }
             }
         };
