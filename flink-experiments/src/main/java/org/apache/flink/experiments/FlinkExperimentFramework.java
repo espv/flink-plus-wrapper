@@ -4,8 +4,6 @@ import no.uio.ifi.ExperimentAPI;
 import no.uio.ifi.SpeTaskHandler;
 import no.uio.ifi.SpeSpecificAPI;
 import no.uio.ifi.TracingFramework;
-import no.uio.ifi.zip.UnzipFile;
-import no.uio.ifi.zip.ZipDirectory;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.math3.stat.regression.SimpleRegression;
 import org.apache.flink.api.common.JobID;
@@ -54,7 +52,6 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 import static java.lang.Math.abs;
 
@@ -1518,9 +1515,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		final DataInputStream[] dis = {null};
 		int snapshot_length;
 		final String[] sourceSavepointPath = new String[1];
-		final long[] ms_start_immutable = {0};
-		long ms_stop_immutable = 0;
-		long ms_start_mutable = 0, ms_stop_mutable = 0;
+		long ms_start_immutable = System.currentTimeMillis();
+		long ms_stop_immutable = ms_start_immutable;
+		long ms_start_mutable = ms_start_immutable, ms_stop_mutable = ms_start_immutable;
 
 		long ms_before_start_mutable = System.currentTimeMillis();
 		AtomicBoolean receivedAllFiles = new AtomicBoolean(false);
@@ -1548,7 +1545,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         try {
             client_socket[0] = state_transfer_server.accept();
             dis[0] = new DataInputStream(client_socket[0].getInputStream());
-            ms_start_immutable[0] = System.currentTimeMillis();
             int sourceSavepointPathLength = dis[0].readInt();
             //System.out.println("Received sourceSavepointLength " + sourceSavepointPathLength);
             StringBuilder sourceSavepointPathArray = new StringBuilder(sourceSavepointPathLength);
@@ -1588,14 +1584,17 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
                 }
                 // Now we have received all files
+                if (typeFiles.equals("static")) {
+                    ms_stop_immutable = System.currentTimeMillis();
+                } else if (typeFiles.equals("dynamic")) {
+                    ms_stop_mutable = System.currentTimeMillis();
+                }
                 receivedAllFiles.set(true);
                 System.out.println(System.currentTimeMillis() + ": Received all " + typeFiles + " files");
             }
         } catch (IOException e) {
             e.printStackTrace();
         }
-
-        long ms_mutable_unzipped = System.currentTimeMillis();
 
         // Now we're supposed to be done with receiving both the snapshot and the incremental checkpoint
         File newestIncrementalCheckpoint = null;
@@ -1627,35 +1626,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (int query_id : this.queryIdToStreamIdToNodeIds.keySet()) {
 			ResumeStream(new ArrayList<>(this.queryIdToStreamIdToNodeIds.get(query_id).keySet()));
 		}
-		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable[0]) + " ms");
-		//System.out.println("Unzipping immutable state took " + (ms_immutable_unzipped - ms_stop_immutable) + " ms");
-
-		System.out.println("Time between receiving the immutable state and the start of receiving the mutable state " + (ms_start_mutable - ms_before_start_mutable) + " ms");
-
-		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_start_mutable) + " ms");
-		//System.out.println("Unzipping mutable state took " + (ms_mutable_unzipped - ms_stop_mutable) + " ms");
-
-        new Thread(() -> {
-            boolean runtimeStarted = false;
-            System.out.println(System.currentTimeMillis() + ": Starting waiting for runtime system to start");
-            while (this.env.getJobClient() == null || !runtimeStarted) {
-                try {
-                    Thread.sleep(1);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-                if (this.env.getJobClient() == null) {
-                    continue;
-                }
-                try {
-                    runtimeStarted = this.env.getJobClient().getJobStatus().get() == JobStatus.RUNNING;
-                } catch (InterruptedException | ExecutionException e) {
-                    e.printStackTrace();
-                }
-            }
-            long ms_stop = System.currentTimeMillis();
-            System.out.println(System.currentTimeMillis() + ": Loading the checkpoint took " + (ms_stop - ms_mutable_unzipped) + " ms");
-        }).start();
+		System.out.println("Receiving the immutable state took " + (ms_stop_immutable - ms_start_immutable) + " ms");
+		System.out.println("Receiving the mutable state took " + (ms_stop_mutable - ms_stop_immutable) + " ms");
 		return "Success";
 	}
 
