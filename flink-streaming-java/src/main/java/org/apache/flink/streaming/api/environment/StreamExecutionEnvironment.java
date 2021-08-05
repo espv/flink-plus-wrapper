@@ -52,9 +52,11 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.ExecutionOptions;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.core.execution.DefaultExecutorServiceLoader;
 import org.apache.flink.core.execution.DetachedJobExecutionResult;
 import org.apache.flink.core.execution.JobClient;
@@ -1860,6 +1862,7 @@ public class StreamExecutionEnvironment {
      */
     @Internal
     public JobExecutionResult execute(StreamGraph streamGraph) throws Exception {
+        this.configuration.set(TaskManagerOptions.MANAGED_MEMORY_SIZE, MemorySize.parse("20G"));
         if (savepointRestoreSettings != null) {
             this.configuration.set(SavepointConfigOptions.SAVEPOINT_PATH, savepointRestoreSettings.getRestorePath());
             this.configuration.set(SavepointConfigOptions.SAVEPOINT_IGNORE_UNCLAIMED_STATE, savepointRestoreSettings.allowNonRestoredState());
