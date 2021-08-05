@@ -1330,7 +1330,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					dos.get().writeChars(relativePath.toString());
 					++filesSent[0];
 				}
-				System.out.println("Sent all static files, total size: " + totalStaticStateSizeSent);
+				System.out.println("Sent all static files, total state size: " + totalStaticStateSizeSent);
 				// -1 means that no file remains
 				dos.get().writeLong(-1);
 
