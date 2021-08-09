@@ -345,7 +345,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
                 timeLastRecvdTuple = System.currentTimeMillis();
 
-                if (CheckpointCoordinator.migrationInProgress) {
+                if (CheckpointCoordinator.waitingForFinalCheckpoint) {
                     SendTuple(row, stream_id);
                 } else if (streamIdActive.getOrDefault(stream_id, true)) {
                     //System.out.println("Processing row " + row);
@@ -982,6 +982,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	int tupleCnt = 0;
 	RandomString rs32 = new RandomString(32);
+	RandomString rs = new RandomString(1000);
 	public String ProcessTuples(List<Tuple2<Integer, Row>> tuples_to_send, boolean clear_tuples, Map<Integer, Integer> nodesSentTo) {
 		//System.out.println("Processing " + tuples_to_send.size() + ", or more correctly: " + tuples_to_send.size() + " tuples");
         for (int i = 0; i < tuples_to_send.size(); i++) {
@@ -993,6 +994,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
             List<Integer> to_nodes;
             synchronized(streamIdToNodeIds) {
                 to_nodes = new ArrayList<>(streamIdToNodeIds.get(stream_id));
+            }
+
+            if (stream_id == 2) {
+                row.setField(2, rs.nextString());
             }
 			TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(stream_id);
 			String stream_name = (String) allSchemas.get(stream_id).get("name");
@@ -1161,6 +1166,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
+        CheckpointCoordinator.migrationInProgress = true;
 		// Send SetRestartTimestamp task before serializing the dynamic state
         Map<String, Object> task2 = new HashMap<>();
 		task2.put("task", "setRestartTimestamp");
@@ -1328,7 +1334,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         savepointPath = checkpointDirectory;
         CheckpointCoordinator.checkpointCoordinator.forceExclusiveFlag = true;
         CheckpointCoordinator.waitingForFinalCheckpoint = true;
-        CheckpointCoordinator.migrationInProgress = true;
         CompletedCheckpoint completedCheckpoint =
                 waitForCheckpoint(new CheckpointProperties(true, CheckpointType.CHECKPOINT,
                         false, false, false,
