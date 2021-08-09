@@ -126,7 +126,6 @@ public class RocksDBStateUploader extends RocksDBStateDataTransfer {
 
             if (CheckpointCoordinator.checkpointCoordinator != null && CheckpointCoordinator.checkpointCoordinator.forceExclusiveFlag) {
                 // We're now forcing incremental checkpointing
-                System.out.println("Forcing an incremental checkpoint");
                 outputStream = checkpointStreamFactory
                         .createCheckpointStateOutputStream(CheckpointedStateScope.EXCLUSIVE);
             } else {
