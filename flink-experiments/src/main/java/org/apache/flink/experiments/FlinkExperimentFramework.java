@@ -328,7 +328,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			fields_str += ", eventTime.proctime";
 		}
 
-		ds.process(new ProcessFunction<Row, Row>() {
+		ds = ds.process(new ProcessFunction<Row, Row>() {
             @Override
             public void processElement(
                     Row row,
@@ -355,7 +355,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     incomingTupleBuffer.add(new Tuple2<>(stream_id, row));
                 }
             }
-        });
+        }).returns(streamIdToTypeInfo.get(stream_id));
 		tableEnv.registerDataStream(stream_name, ds, fields_str);
 		this.streamIdToDataStream.put(stream_id, ds);
 	}
