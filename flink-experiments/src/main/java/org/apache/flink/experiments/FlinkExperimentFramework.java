@@ -1195,7 +1195,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	public void setJobID() {
         try {
-            while (env.getJobClient().getJobStatus().get() != JobStatus.RUNNING) {
+            while (env.getJobClient() == null ||
+                   env.getJobClient().getJobStatus().get() != JobStatus.RUNNING) {
                 Thread.yield();
             }
         } catch (InterruptedException | ExecutionException e) {
