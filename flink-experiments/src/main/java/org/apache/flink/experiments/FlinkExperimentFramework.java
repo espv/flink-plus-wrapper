@@ -13,7 +13,6 @@ import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.TypeInformationSerializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
@@ -51,7 +50,6 @@ import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.*;
-import java.security.SecureRandom;
 import java.sql.Timestamp;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
@@ -1136,8 +1134,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	AtomicReference<DataOutputStream> dos = new AtomicReference<>();
 
-	AtomicBoolean sentFirstZip = new AtomicBoolean(false);
-
+	boolean initializedStateTransfer = false;
     public void InitializeStateTransfer(int new_host) {
         System.out.println(System.currentTimeMillis() + ": New host: " + new_host);
         String ip = (String) this.nodeIdToIpAndPort.get(new_host).get("ip");
@@ -1162,6 +1159,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         } catch (IOException e) {
             e.printStackTrace();
         }
+        initializedStateTransfer = true;
     }
 
 	@Override
@@ -1232,6 +1230,56 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         return completedCheckpoint;
     }
 
+    public void SendFiles(int new_host, List<FileToSend> filesToSend, AtomicBoolean loadedAllFiles, int[] filesSent) {
+        long ms_start = System.currentTimeMillis();
+        try {
+            if (!initializedStateTransfer) {
+                InitializeStateTransfer(new_host);
+            }
+            long totalDynamicStateSizeSent = 0;
+            outer:
+            while (true) {
+                while (filesToSend.isEmpty()) {
+                    if (filesToSend.isEmpty() && loadedAllFiles.get()) {
+                        break outer;
+                    }
+                    Thread.yield();
+                }
+                FileToSend fts;
+                synchronized (filesToSend) {
+                    fts = filesToSend.get(0);
+                    filesToSend.remove(fts);
+                }
+                System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
+                dos.get().writeLong(fts.file.length());
+                totalDynamicStateSizeSent += fts.file.length();
+                dos.get().write(fts.fileAsBytes);
+                StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
+                // Remove the prefix that is common in the file path and the root checkpoint directory
+                for (int i = 0, j = 0; j < savepointPath.length(); i++, j++) {
+                    if (relativePath.charAt(i) == savepointPath.charAt(j)) {
+                        // We decrement i because we remove a character
+                        relativePath.deleteCharAt(i--);
+                    } else {
+                        break;
+                    }
+                }
+                System.out.println("savepointPath: " + savepointPath + ", relativePath: " + relativePath);
+                dos.get().writeInt(relativePath.length());
+                dos.get().writeChars(relativePath.toString());
+                ++filesSent[0];
+            }
+            // -1 means that no file remains
+            dos.get().writeLong(-1);
+            long ms_stop = System.currentTimeMillis();
+            System.out.println("Sent all dynamic files, total state size: " + totalDynamicStateSizeSent);
+            System.out.println("Sending dynamic state took " + (ms_stop-ms_start) + " ms");
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
 	public String DoMoveStaticQueryState(int query_id, int new_host) {
 		long ms_start = System.currentTimeMillis();
         String checkpointDirectory = checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
@@ -1266,56 +1314,22 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 					FileToSend fts = new FileToSend(file);
 					System.out.println("Loading file " + (filesLoaded[0]+1) + ": " + fts.file.getAbsolutePath());
 					fts.loadFile();
-					filesToSend.add(fts);
-					++filesLoaded[0];
+                    synchronized (filesToSend) {
+                        filesToSend.add(fts);
+                    }
+                    ++filesLoaded[0];
 				}
 			}
 			loadedAllFiles.set(true);
 		}).start();
 
+        AtomicBoolean sentFiles = new AtomicBoolean(false);
 		new Thread(() -> {
-			// Begin to set up state transfer connection
-            InitializeStateTransfer(new_host);
-			try {
-                long totalStaticStateSizeSent = 0;
-				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
-					while (filesSent[0] >= filesLoaded[0]) {
-						Thread.yield();
-					}
-					FileToSend fts = filesToSend.get(filesSent[0]);
-					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
+		    SendFiles(new_host, filesToSend, loadedAllFiles, filesSent);
+		    sentFiles.set(true);
+        }).start();
 
-					dos.get().writeLong(fts.file.length());
-                    totalStaticStateSizeSent += fts.file.length();
-					dos.get().write(fts.fileAsBytes);
-					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
-					// Remove the prefix that is common in the file path and the root checkpoint directory
-					for (int i = 0, j = 0; j < savepointPath.length(); i++, j++) {
-						if (relativePath.charAt(i) == savepointPath.charAt(j)) {
-							// We decrement i because we remove a character
-							relativePath.deleteCharAt(i--);
-						} else {
-							break;
-						}
-					}
-					System.out.println("savepointPath: " + savepointPath + ", relativePath: " + relativePath);
-					dos.get().writeInt(relativePath.length());
-					dos.get().writeChars(relativePath.toString());
-					++filesSent[0];
-				}
-				System.out.println("Sent all static files, total state size: " + totalStaticStateSizeSent);
-				// -1 means that no file remains
-				dos.get().writeLong(-1);
-
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-			// Now we have sent the snapshot to the new host
-			// The new host will receive in the task how many bytes it must receive on its socket
-			sentFirstZip.set(true);
-		}).start();
-
-		while (!sentFirstZip.get()) {
+		while (!sentFiles.get()) {
             try {
                 Thread.sleep(1);
             } catch (InterruptedException e) {
@@ -1370,51 +1384,16 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		}).start();
 
 		long ms_stop_preparing = System.currentTimeMillis();
+
+        AtomicBoolean sentFiles = new AtomicBoolean(false);
+        new Thread(() -> {
+            SendFiles(new_host, filesToSend, loadedAllFiles, filesSent);
+            sentFiles.set(true);
+        }).start();
+        while (!sentFiles.get()) {
+            Thread.yield();
+        }
 		System.out.println("Extracting and preparing the dynamic state took " + (ms_stop_preparing-ms_start));
-
-		new Thread(() -> {
-			try {
-			    while (!sentFirstZip.get() && incrementalCheckpointing) {
-					Thread.yield();
-				}
-			    if (!incrementalCheckpointing) {
-			        InitializeStateTransfer(new_host);
-                }
-                long totalDynamicStateSizeSent = 0;
-				while (!loadedAllFiles.get() || filesSent[0] < filesLoaded[0]) {
-					while (filesSent[0] >= filesLoaded[0]) {
-						Thread.yield();
-					}
-					FileToSend fts = filesToSend.get(filesSent[0]);
-					System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
-					dos.get().writeLong(fts.file.length());
-                    totalDynamicStateSizeSent += fts.file.length();
-					dos.get().write(fts.fileAsBytes);
-					StringBuilder relativePath = new StringBuilder(fts.file.getAbsolutePath());
-					// Remove the prefix that is common in the file path and the root checkpoint directory
-					for (int i = 0, j = 0; j < savepointPath.length(); i++, j++) {
-						if (relativePath.charAt(i) == savepointPath.charAt(j)) {
-							// We decrement i because we remove a character
-							relativePath.deleteCharAt(i--);
-						} else {
-							break;
-						}
-					}
-					System.out.println("savepointPath: " + savepointPath + ", relativePath: " + relativePath);
-					dos.get().writeInt(relativePath.length());
-					dos.get().writeChars(relativePath.toString());
-					++filesSent[0];
-				}
-				// -1 means that no file remains
-				dos.get().writeLong(-1);
-                long ms_stop = System.currentTimeMillis();
-				System.out.println("Sent all dynamic files, total state size: " + totalDynamicStateSizeSent);
-                System.out.println("Sending dynamic state took " + (ms_stop-ms_stop_preparing) + " ms");
-
-			} catch (IOException e) {
-				e.printStackTrace();
-			}
-		}).start();
 
 		return "Success";
 	}
@@ -1447,21 +1426,20 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         System.out.println(System.currentTimeMillis() + ": Starting to receive files");
         AtomicBoolean writtenAllCheckpointFiles = new AtomicBoolean(false);
         new Thread(() -> {
-            int index = 0;
-            boolean writtenAllFiles = false;
+            outer:
             while (true) {
-                while (receivedFiles.size() == index) {
-                    if (receivedAllFiles.get() && receivedFiles.size() == index) {
-                        writtenAllFiles = true;
-                        break;
+                while (receivedFiles.isEmpty()) {
+                    if (receivedFiles.isEmpty() && receivedAllFiles.get()) {
+                        break outer;
                     }
                     Thread.yield();
                 }
-                if (writtenAllFiles) {
-                    break;
-                }
                 long start = System.currentTimeMillis();
-                FileToReceive ftr = receivedFiles.get(index);
+                FileToReceive ftr;
+                synchronized (receivedFiles) {
+                    ftr = receivedFiles.get(0);
+                    receivedFiles.remove(ftr);
+                }
                 File checkpoint_file = new File(savepointPath + ftr.filename);
                 System.out.println("Received file " + savepointPath + ftr.filename);
                 checkpoint_file.getParentFile().mkdirs();
@@ -1470,7 +1448,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-                ++index;
                 System.out.println("Time to write file after receiving it: " + (System.currentTimeMillis() - start));
             }
             System.out.println("Written all checkpoint files");
@@ -1519,7 +1496,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     FileToReceive receivedFile = new FileToReceive(
                             filename.toString(),
                             fileAsBytes);
-                    receivedFiles.add(receivedFile);
+                    synchronized (receivedFiles) {
+                        receivedFiles.add(receivedFile);
+                    }
                     File checkpointFile = new File(savepointPath + receivedFile.filename);
                     //checkpointFile.getParentFile().mkdirs();
                     FileUtils.writeByteArrayToFile(checkpointFile, receivedFile.fileAsBytes);
