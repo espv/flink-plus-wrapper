@@ -54,7 +54,7 @@ public class CheckpointProperties implements Serializable {
     private final boolean discardSuspended;
 
     @VisibleForTesting
-    CheckpointProperties(
+    public CheckpointProperties(
             boolean forced,
             CheckpointType checkpointType,
             boolean discardSubsumed,

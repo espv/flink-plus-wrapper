@@ -1866,12 +1866,11 @@ public class CheckpointCoordinator {
     // ------------------------------------------------------------------------
 
     public boolean forceExclusiveFlag = false;
-    public boolean migrationInProgress = false;
-    public boolean checkpointInProgress = false;
-    public boolean waitingForFinalCheckpoint = false;
+    public static boolean migrationInProgress = false;
+    public static boolean waitingForFinalCheckpoint = false;
     public boolean createdFinalCheckpoint = false;
     boolean checkpointing_enabled = true;
-    boolean first = true;
+    public static long checkpointTimestamp = 0;
     private final class ScheduledTrigger implements Runnable {
 
         @Override
