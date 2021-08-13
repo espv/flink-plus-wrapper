@@ -16,12 +16,15 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.typeutils.RowTypeInfo;
+import org.apache.flink.contrib.streaming.state.DefaultConfigurableOptionsFactory;
+import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.checkpoint.CheckpointProperties;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
+import org.apache.flink.runtime.state.filesystem.FsCheckpointStreamFactory;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
 import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.TimeCharacteristic;
@@ -42,6 +45,7 @@ import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.rocksdb.CompactionOptionsFIFO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
@@ -57,6 +61,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static java.lang.Math.abs;
+import static org.rocksdb.CompactionStyle.FIFO;
+
 
 @SuppressWarnings("unchecked")
 public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, Serializable {
@@ -349,9 +355,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     //System.out.println("Processing row " + row);
                     out.collect(row);
                     ++cnt[0];
-                } else if (streamIdBuffer.getOrDefault(stream_id, false)) {
+                }/* else if (streamIdBuffer.getOrDefault(stream_id, false)) {
+                    //System.out.println("Adding tuple to incoming tuple buffer");
                     incomingTupleBuffer.add(new Tuple2<>(stream_id, row));
-                }
+                }*/
             }
         }).returns(streamIdToTypeInfo.get(stream_id));
 		tableEnv.registerDataStream(stream_name, ds, fields_str);
@@ -720,13 +727,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         if (incrementalCheckpointing) {
-            RocksDBStateBackend rocksdb = null;
-            try {
-                rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, incrementalCheckpointing);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
+            rocksdb.setRocksDBOptions(defaultConfigurableOptionsFactory);
             env.setStateBackend(rocksdb);
+            env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
         } else {
             FsStateBackend fsStateBackend;
             fsStateBackend = new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
@@ -907,6 +911,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
+	DefaultConfigurableOptionsFactory defaultConfigurableOptionsFactory = new DefaultConfigurableOptionsFactory(); //.setUseDynamicLevelSize(true).setMaxSizeLevelBase("1gb").setMinWriteBufferNumberToMerge(100).setTargetFileSizeBase("1gb");//.setCompactionStyle(FIFO);
 	boolean interrupted = false;
 	@Override
 	public String StopRuntimeEnv() {
@@ -934,13 +939,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         if (incrementalCheckpointing) {
-            RocksDBStateBackend rocksdb = null;
-            try {
-                rocksdb = new RocksDBStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId, incrementalCheckpointing);
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
+            rocksdb.setRocksDBOptions(defaultConfigurableOptionsFactory);
             env.setStateBackend(rocksdb);
+            env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
         } else {
             FsStateBackend fsStateBackend;
             fsStateBackend = new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
@@ -1282,7 +1284,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	public String DoMoveStaticQueryState(int query_id, int new_host) {
 		long ms_start = System.currentTimeMillis();
-        String checkpointDirectory = checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+        String checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
         savepointPath = checkpointDirectory;
 
         waitForCheckpoint(null);
@@ -1509,7 +1511,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 } else if (typeFiles.equals("dynamic")) {
                     ms_stop_mutable = System.currentTimeMillis();
                 }
-                //System.out.println(System.currentTimeMillis() + ": Received all " + typeFiles + " files");
+                System.out.println(System.currentTimeMillis() + ": Received all " + typeFiles + " files");
             }
             receivedAllFiles.set(true);
             System.out.println("Received all files");
