@@ -1280,8 +1280,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     continue;
                 }
                 LoadFiles(file, filesToSend, filesLoaded, checkpointId, ignoreCheckpointDirectory);
-            } else {
-                assert file.isFile();
+            } else if (file.isFile()) {
                 long bytesLeft = 0;
                 FileToSend fts = new FileToSend(file);
                 do {
