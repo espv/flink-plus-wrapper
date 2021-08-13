@@ -1232,8 +1232,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         return completedCheckpoint;
     }
 
-    public void SendFiles(int new_host, List<FileToSend> filesToSend, AtomicBoolean loadedAllFiles, int[] filesSent) {
+    public void SendFiles(int new_host, List<FileToSend> filesToSend, AtomicBoolean loadedAllFiles) {
         long ms_start = System.currentTimeMillis();
+        int filesSent = 0;
         try {
             if (!initializedStateTransfer) {
                 InitializeStateTransfer(new_host);
@@ -1252,7 +1253,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     fts = filesToSend.get(0);
                     filesToSend.remove(fts);
                 }
-                System.out.println("Sending file " + (filesSent[0] + 1) + ": " + fts.file.getAbsolutePath());
+                System.out.println("Sending file " + (filesSent + 1) + ": " + fts.file.getAbsolutePath());
                 dos.get().writeLong(fts.file.length());
                 totalDynamicStateSizeSent += fts.file.length();
                 dos.get().write(fts.fileAsBytes);
@@ -1269,7 +1270,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 System.out.println("savepointPath: " + savepointPath + ", relativePath: " + relativePath);
                 dos.get().writeInt(relativePath.length());
                 dos.get().writeChars(relativePath.toString());
-                ++filesSent[0];
+                ++filesSent;
             }
             // -1 means that no file remains
             dos.get().writeLong(-1);
@@ -1279,6 +1280,32 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
         } catch (IOException e) {
             e.printStackTrace();
+        }
+    }
+
+    public void LoadFiles(File rootFile, List<FileToSend> filesToSend, int[] filesLoaded, boolean ignoreCheckpointDirectory) {
+        for (File file : rootFile.listFiles()) {
+            if (file.isDirectory()) {
+                if (ignoreCheckpointDirectory && file.getName().startsWith("chk-")) {
+                    // We don't send incremental checkpoints here
+                    continue;
+                }
+                System.out.println("directory: " + file.getAbsolutePath());
+                LoadFiles(file, filesToSend, filesLoaded, ignoreCheckpointDirectory);
+            } else {
+                assert file.isFile();
+                // This means that we can load 10 more files than we have sent
+                while (filesToSend.size() > 10) {
+                    Thread.yield();
+                }
+                FileToSend fts = new FileToSend(file);
+                System.out.println("Loading file " + (filesLoaded[0]+1) + ": " + fts.file.getAbsolutePath());
+                fts.loadFile();
+                synchronized (filesToSend) {
+                    filesToSend.add(fts);
+                }
+                ++filesLoaded[0];
+            }
         }
     }
 
@@ -1293,45 +1320,22 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 		String finalCheckpointDirectory = checkpointDirectory;
 		List<FileToSend> filesToSend = new ArrayList<>();
-		final int[] filesSent = {0};
-		final int[] filesLoaded = {0};
 		AtomicBoolean loadedAllFiles = new AtomicBoolean(false);
 
         long timeExtractedStaticState = System.currentTimeMillis();
         System.out.println(timeExtractedStaticState + ": Checkpoint is done. Now we send it");
         new Thread(() -> {
-			File rootFile = new File(finalCheckpointDirectory);
-			for (File directory : rootFile.listFiles()) {
-				assert directory.isDirectory();
-				if (directory.getName().startsWith("chk-")) {
-					// We don't send incremental checkpoints here
-					continue;
-				}
-                for (File file : directory.listFiles()) {
-					assert file.isFile();
-					// This means that we can load 10 more files than we have sent
-					while (filesLoaded[0] > filesSent[0] + 10) {
-						Thread.yield();
-					}
-					FileToSend fts = new FileToSend(file);
-					System.out.println("Loading file " + (filesLoaded[0]+1) + ": " + fts.file.getAbsolutePath());
-					fts.loadFile();
-                    synchronized (filesToSend) {
-                        filesToSend.add(fts);
-                    }
-                    ++filesLoaded[0];
-				}
-			}
-			loadedAllFiles.set(true);
+            LoadFiles(new File(finalCheckpointDirectory), filesToSend, new int[1], true);
+            loadedAllFiles.set(true);
 		}).start();
 
-        AtomicBoolean sentFiles = new AtomicBoolean(false);
+        AtomicBoolean sentAllFiles = new AtomicBoolean(false);
 		new Thread(() -> {
-		    SendFiles(new_host, filesToSend, loadedAllFiles, filesSent);
-		    sentFiles.set(true);
+		    SendFiles(new_host, filesToSend, loadedAllFiles);
+            sentAllFiles.set(true);
         }).start();
 
-		while (!sentFiles.get()) {
+		while (!sentAllFiles.get()) {
             try {
                 Thread.sleep(1);
             } catch (InterruptedException e) {
@@ -1357,42 +1361,27 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                         false, false));
         long checkpointId = completedCheckpoint.getCheckpointID();
         CheckpointCoordinator.checkpointTimestamp = completedCheckpoint.getTimestamp();
-        System.out.println("Set CheckpointCoordinator.checkpointTimestamp to " + CheckpointCoordinator.checkpointTimestamp);
 
-        File newestIncrementalCheckpoint = new File(checkpointDirectory + "/chk-" + checkpointId);
-		System.out.println(System.currentTimeMillis() + ": Loading checkpoint " + newestIncrementalCheckpoint.getPath());
+        StringBuilder finalCheckpointDirectory = new StringBuilder().append(checkpointDirectory);
+        if (incrementalCheckpointing) {
+            finalCheckpointDirectory.append("/chk-").append(checkpointId);
+        }
 
-		String finalCheckpointDirectory = newestIncrementalCheckpoint.getAbsolutePath();
 		List<FileToSend> filesToSend = new ArrayList<>();
-		final int[] filesSent = {0};
-		final int[] filesLoaded = {0};
 		AtomicBoolean loadedAllFiles = new AtomicBoolean(false);
 		new Thread(() -> {
-			File rootFile = new File(finalCheckpointDirectory);
-			for (File file : rootFile.listFiles()) {
-			    System.out.println("Loading file to send: " + file.getAbsolutePath());
-				assert file.isFile();
-				// This means that we can load 10 more files than we have sent
-				while (filesLoaded[0] > filesSent[0] + 10) {
-					Thread.yield();
-				}
-				FileToSend fts = new FileToSend(file);
-				fts.loadFile();
-				filesToSend.add(fts);
-				++filesLoaded[0];
-			}
-			System.out.println("Loaded all files");
-			loadedAllFiles.set(true);
+		    LoadFiles(new File(finalCheckpointDirectory.toString()), filesToSend, new int[1], false);
+		    loadedAllFiles.set(true);
 		}).start();
 
 		long ms_stop_preparing = System.currentTimeMillis();
 
-        AtomicBoolean sentFiles = new AtomicBoolean(false);
+        AtomicBoolean sentAllFiles = new AtomicBoolean(false);
         new Thread(() -> {
-            SendFiles(new_host, filesToSend, loadedAllFiles, filesSent);
-            sentFiles.set(true);
+            SendFiles(new_host, filesToSend, loadedAllFiles);
+            sentAllFiles.set(true);
         }).start();
-        while (!sentFiles.get()) {
+        while (!sentAllFiles.get()) {
             Thread.yield();
         }
 		System.out.println("Extracting and preparing the dynamic state took " + (ms_stop_preparing-ms_start));
