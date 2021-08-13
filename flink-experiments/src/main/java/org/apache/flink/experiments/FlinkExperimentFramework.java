@@ -1341,8 +1341,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		long ms_start = System.currentTimeMillis();
 		String checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
         savepointPath = checkpointDirectory;
-        CheckpointCoordinator.checkpointCoordinator.forceExclusiveFlag = true;
         CheckpointCoordinator.waitingForFinalCheckpoint = true;
+        CheckpointCoordinator.checkpointCoordinator.forceExclusiveFlag = incrementalCheckpointing;
         CompletedCheckpoint completedCheckpoint =
                 waitForCheckpoint(new CheckpointProperties(true, CheckpointType.CHECKPOINT,
                         false, false, false,
