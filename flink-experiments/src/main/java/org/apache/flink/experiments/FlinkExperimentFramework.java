@@ -726,16 +726,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-        if (incrementalCheckpointing) {
-            EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
-            rocksdb.setRocksDBOptions(defaultConfigurableOptionsFactory);
-            env.setStateBackend(rocksdb);
-            env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
-        } else {
-            FsStateBackend fsStateBackend;
-            fsStateBackend = new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
-            env.setStateBackend(fsStateBackend);
-        }
+        EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
+        rocksdb.setRocksDBOptions(defaultConfigurableOptionsFactory);
+        env.setStateBackend(rocksdb);
+        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -938,16 +932,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
-        if (incrementalCheckpointing) {
-            EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
-            rocksdb.setRocksDBOptions(defaultConfigurableOptionsFactory);
-            env.setStateBackend(rocksdb);
-            env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
-        } else {
-            FsStateBackend fsStateBackend;
-            fsStateBackend = new FsStateBackend("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
-            env.setStateBackend(fsStateBackend);
-        }
+        EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
+        rocksdb.setRocksDBOptions(defaultConfigurableOptionsFactory);
+        env.setStateBackend(rocksdb);
+        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
