@@ -352,7 +352,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 if (CheckpointCoordinator.waitingForFinalCheckpoint) {
                     SendTuple(row, stream_id);
                 } else if (streamIdActive.getOrDefault(stream_id, true)) {
-                    //System.out.println("Processing row " + row);
                     out.collect(row);
                     ++cnt[0];
                 }/* else if (streamIdBuffer.getOrDefault(stream_id, false)) {
@@ -997,7 +996,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                                     + otherNodeId + " with topic " + topicName + " and IP "
                                     + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
                 }
-                nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, null, null, serializationSchema.serialize(row)));
+                nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, new Random().nextInt(10), null, serializationSchema.serialize(row)));
                 //}
             }
 		}
@@ -1404,9 +1403,10 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		final Socket[] client_socket = new Socket[1];
 		final DataInputStream[] dis = {null};
 		final String[] sourceSavepointPath = new String[1];
-		long ms_start_immutable = System.currentTimeMillis();
-		long ms_stop_immutable = ms_start_immutable;
-		long ms_start_mutable = ms_start_immutable, ms_stop_mutable = ms_start_immutable;
+		long ms_start_immutable = -1;
+		long ms_stop_immutable = -1;
+		long ms_start_mutable = -1;
+        long ms_stop_mutable = -1;
 
 		AtomicBoolean receivedAllFiles = new AtomicBoolean(false);
         List<FileToReceive> receivedFiles = new ArrayList<>();
@@ -1463,9 +1463,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 while (true) {
                     System.out.println(System.currentTimeMillis() + ": Waiting for " + typeFiles + " files");
                     long fileLength = dis[0].readLong();
-                    if (typeFiles.equals("static")) {
+                    if (typeFiles.equals("static") && ms_start_immutable == -1) {
                         ms_start_immutable = System.currentTimeMillis();
-                    } else if (typeFiles.equals("dynamic")) {
+                    } else if (typeFiles.equals("dynamic") && ms_start_mutable == -1) {
                         ms_start_mutable = System.currentTimeMillis();
                     }
 
