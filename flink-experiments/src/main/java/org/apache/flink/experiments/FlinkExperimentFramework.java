@@ -996,7 +996,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                                     + otherNodeId + " with topic " + topicName + " and IP "
                                     + nodeIdToIpAndPort.get(otherNodeId).get("ip"));
                 }
-                nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, new Random().nextInt(10), null, serializationSchema.serialize(row)));
+                nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topicName, null, null, serializationSchema.serialize(row)));
                 //}
             }
 		}
