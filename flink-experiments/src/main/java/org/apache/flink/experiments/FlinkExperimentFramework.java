@@ -74,7 +74,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	int interval_wait;
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
 	boolean useRowtime = false;
-	boolean incrementalCheckpointing = false;
+	boolean incrementalCheckpointing = true;
 	String trace_output_folder;
 	StreamExecutionEnvironment env;
 	StreamTableEnvironment tableEnv;
