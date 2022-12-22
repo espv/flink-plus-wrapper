@@ -727,7 +727,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
         env.setStateBackend(rocksdb);
-        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
+        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -933,7 +933,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
         env.setStateBackend(rocksdb);
-        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId);
+        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId);
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -1033,7 +1033,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String RetEndOfStream(int milliseconds) {
 		milliseconds += TIMELASTRECEIVEDTHRESHOLD;  // We add waiting time because we don't log every received tuple
-		File file = new File(System.getenv("STATE_FOLDER") + "/log/FlinkWorker.log");
+		File file = new File(System.getenv("TMP_FOLDER") + "/state/log/FlinkWorker.log");
 		try {
 			// First we wait until the log file is not empty
 			// Importantly, the log file may only contain the logs for when having received tuples
@@ -1111,7 +1111,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		WatchService watchService
 				= FileSystems.getDefault().newWatchService();
 
-		java.nio.file.Path path = Paths.get("/tmp/expose-flink-" + nodeId + "-" + name);
+		java.nio.file.Path path = Paths.get(System.getenv("TMP_FOLDER") + "/expose-flink-" + nodeId + "-" + name);
 
 		path.register(
 				watchService,
@@ -1162,7 +1162,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         List<Object> task_args = new ArrayList<>();
         task_args.add(queryIdToMapQuery);
         setJobID();
-        savepointPath = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+        savepointPath = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/" + getJobID();
         String[] path = savepointPath.split("/");
         String parentFolderName = path[path.length-1];
         task_args.add(parentFolderName);
@@ -1305,7 +1305,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String DoMoveStaticQueryState(int query_id, int new_host) {
 		long ms_start = System.currentTimeMillis();
         CheckpointCoordinator.migrationInProgress = true;
-		String checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+		String checkpointDirectory = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/" + getJobID();
         savepointPath = checkpointDirectory;
 
         long checkpointId = waitForCheckpoint(null).getCheckpointID();
@@ -1346,7 +1346,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String MoveDynamicQueryState(int query_id, int new_host) {
         CheckpointCoordinator.migrationInProgress = true;
         long ms_start = System.currentTimeMillis();
-		String checkpointDirectory = System.getenv("STATE_FOLDER") + "/runtime-state/node-" + nodeId + "/" + getJobID();
+		String checkpointDirectory = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/" + getJobID();
         savepointPath = checkpointDirectory;
         CheckpointCoordinator.waitingForFinalCheckpoint = true;
         CheckpointCoordinator.checkpointCoordinator.forceExclusiveFlag = incrementalCheckpointing;
@@ -1395,8 +1395,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		this.queryIdToMapQuery = queryIdToMapQuery;
 		this.queryIdToStreamIdToNodeIds = queryIdToStreamIdToNodeIds;
 		// Write snapshot to savepoints/received_savepoints/savepointName
-		savepointPath = System.getenv("STATE_FOLDER") + "/savepoints/received_savepoints/" + savepointName;
-		String zippedSavepointPath = System.getenv("STATE_FOLDER") + "/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
+		savepointPath = System.getenv("TMP_FOLDER") + "/state/savepoints/received_savepoints/" + savepointName;
+		String zippedSavepointPath = System.getenv("TMP_FOLDER") + "/state/savepoints/received_zipped_savepoints/zippedSnapshot.zip";
 		File zip = new File(zippedSavepointPath);
 		zip.delete();
 
