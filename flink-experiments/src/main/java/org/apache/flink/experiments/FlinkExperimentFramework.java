@@ -726,8 +726,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
         env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
+        rocksdb.setDbStoragePath("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/db");
         env.setStateBackend(rocksdb);
-        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId);
+        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints");
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
@@ -932,8 +933,9 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
 		env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
         EmbeddedRocksDBStateBackend rocksdb = new EmbeddedRocksDBStateBackend(incrementalCheckpointing);
+        rocksdb.setDbStoragePath("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/db");
         env.setStateBackend(rocksdb);
-        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId);
+        env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints");
 		if (useRowtime) {
 			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
 		} else {
