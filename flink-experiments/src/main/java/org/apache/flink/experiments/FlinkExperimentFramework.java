@@ -1164,7 +1164,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         List<Object> task_args = new ArrayList<>();
         task_args.add(queryIdToMapQuery);
         setJobID();
-        savepointPath = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/" + getJobID();
+        savepointPath = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints/" + getJobID();
         String[] path = savepointPath.split("/");
         String parentFolderName = path[path.length-1];
         task_args.add(parentFolderName);
@@ -1307,7 +1307,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String DoMoveStaticQueryState(int query_id, int new_host) {
 		long ms_start = System.currentTimeMillis();
         CheckpointCoordinator.migrationInProgress = true;
-		String checkpointDirectory = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/" + getJobID();
+		String checkpointDirectory = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints/" + getJobID();
         savepointPath = checkpointDirectory;
 
         long checkpointId = waitForCheckpoint(null).getCheckpointID();
@@ -1348,7 +1348,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	public String MoveDynamicQueryState(int query_id, int new_host) {
         CheckpointCoordinator.migrationInProgress = true;
         long ms_start = System.currentTimeMillis();
-		String checkpointDirectory = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/" + getJobID();
+		String checkpointDirectory = System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints/" + getJobID();
         savepointPath = checkpointDirectory;
         CheckpointCoordinator.waitingForFinalCheckpoint = true;
         CheckpointCoordinator.checkpointCoordinator.forceExclusiveFlag = incrementalCheckpointing;
