@@ -511,7 +511,7 @@ public abstract class MetadataV2V3SerializerBase {
             long size = dis.readLong();
             String pathString = dis.readUTF();
             String[] pathArray = pathString.split("/");
-            pathString = System.getenv("STATE_FOLDER") + "/savepoints/received_savepoints/";
+            pathString = System.getenv("TMP_FOLDER") + "/state/savepoints/received_savepoints/";
             pathString += pathArray[pathArray.length-3] + "/" + pathArray[pathArray.length-2] + "/" + pathArray[pathArray.length-1];
             System.out.println("New location for checkpoint is " + pathString);
             return new FileStateHandle(new Path(pathString), size);
