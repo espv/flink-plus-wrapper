@@ -573,6 +573,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>> extends Ab
                 "Mailbox loop interrupted before recovery was finished.");
 
         isRunning = true;
+	System.out.println("lastStreamTaskInitialized is now getting set");
         StreamTask.lastStreamTaskInitialized = System.currentTimeMillis();
     }
 
