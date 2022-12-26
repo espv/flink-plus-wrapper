@@ -352,7 +352,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                 if (CheckpointCoordinator.waitingForFinalCheckpoint) {
                     SendTuple(row, stream_id);
                 } else if (streamIdActive.getOrDefault(stream_id, true)) {
-			System.out.println("Received tuple of stream " + stream_id);
                     out.collect(row);
                     ++cnt[0];
                 }/* else if (streamIdBuffer.getOrDefault(stream_id, false)) {
