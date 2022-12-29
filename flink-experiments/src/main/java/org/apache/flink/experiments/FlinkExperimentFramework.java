@@ -309,11 +309,12 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     this.props);
             consumers.add(consumer);
         }
+	    long actual_restart_time = timestampForKafkaConsumer;
 		if (timestampForKafkaConsumer == 0) {
-            consumer.setStartFromTimestamp(System.currentTimeMillis());
-		} else {
-			consumer.setStartFromTimestamp(timestampForKafkaConsumer);
+			actual_restart_time = System.currentTimeMillis();
 		}
+		consumer.setStartFromTimestamp(actual_restart_time);
+		System.out.println("Consumer " + consumer + " starts consuming from timestamp " + actual_restart_time + ", " + (System.currentTimeMillis() - actual_restart_time) + " ms after NOW");
 		DataStream<Row> ds = env.addSource(consumer)
                 .uid("stream-" + stream_id);
 
