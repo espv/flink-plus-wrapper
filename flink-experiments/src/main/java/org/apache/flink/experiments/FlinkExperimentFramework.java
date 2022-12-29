@@ -1169,7 +1169,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         String parentFolderName = path[path.length-1];
         task_args.add(parentFolderName);
         task_args.add(queryIdToStreamIdToNodeIds);
-	task_args.add(System.currentTimeMillis());
         task.put("arguments", task_args);
         task.put("node", Collections.singletonList(new_host));
         System.out.println(System.currentTimeMillis() + ": Time at sending state: " + System.currentTimeMillis());
@@ -1392,7 +1391,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		return "Success";
 	}
 
-	public String LoadQueryState(Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds, long restart_time) {
+	public String LoadQueryState(Map<Integer, Map<String, Object>> queryIdToMapQuery, String savepointName, Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds) {
 		System.out.println("Time at receiving state: " + System.currentTimeMillis());
 		long ms_start = System.currentTimeMillis();
 		this.queryIdToMapQuery = queryIdToMapQuery;
@@ -1533,7 +1532,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		for (Map<String, Object> map_query : queryIdToMapQuery.values()) {
 			DeployQueries(map_query);
 		}
-		this.timestampForKafkaConsumer = restart_time;
 		StopRuntimeEnv();
 		env.setSavepointRestoreSettings(savepointRestoreSettings);
 		DoStartRuntimeEnv();
@@ -1758,8 +1756,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				Map<Integer, Map<String, Object>> queryIdToMapQuery = (Map<Integer, Map<String, Object>>) args.get(0);
 				String savepointFileName = (String) args.get(1);
 				Map<Integer, Map<Integer, List<Integer>>> queryIdToStreamIdToNodeIds = (Map<Integer, Map<Integer, List<Integer>>>) args.get(2);
-				long restart_time = (long) args.get(3);
-				LoadQueryState(queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds, restart_time);
+				LoadQueryState(queryIdToMapQuery, savepointFileName, queryIdToStreamIdToNodeIds);
 				break;
 			} case "setRestartTimestamp": {
 				SetRestartTimestamp();
