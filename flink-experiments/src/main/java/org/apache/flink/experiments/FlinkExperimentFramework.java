@@ -1153,6 +1153,14 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         initializedStateTransfer = true;
     }
 
+    @Override
+    public String LoadSavepoint(String absolute_path) {
+        this.savepointPath = absolute_path;
+        savepointRestoreSettings = SavepointRestoreSettings.forPath(savepointPath, false);
+        env.setSavepointRestoreSettings(savepointRestoreSettings);
+        return "Success";
+    }
+
 	@Override
 	public String MoveStaticQueryState(int query_id, int new_host) {
 		// Send SetRestartTimestamp task before serializing the dynamic state
