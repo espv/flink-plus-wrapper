@@ -883,7 +883,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			cnt[0] = 0;
             uuidToCnt = new HashMap<>();
             idToCnt = new HashMap<>();
-			System.out.println("Starting runtime");
+			System.out.println(System.currentTimeMillis() + " Starting runtime");
 			try {
 				env.execute();
 			} catch (Exception e) {
