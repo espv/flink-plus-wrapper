@@ -49,6 +49,9 @@ import org.rocksdb.CompactionOptionsFIFO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
+import org.apache.flink.contrib.streaming.state.RocksDBOptionsFactory;
+import org.rocksdb.DBOptions;
+import org.rocksdb.ColumnFamilyOptions;
 
 import java.io.*;
 import java.net.ServerSocket;
@@ -73,7 +76,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	int pktsPublished;
 	int interval_wait;
 	final int TIMELASTRECEIVEDTHRESHOLD = 1000;  // ms
-	boolean useRowtime = false;
 	boolean incrementalCheckpointing = true;
 	String trace_output_folder;
 	StreamExecutionEnvironment env;
@@ -285,8 +287,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	volatile static int[] cnt = {0};
 
-    static Map<String, Integer> uuidToCnt = new HashMap<>();
-    static final Map<String, Integer> uuidToCnt2 = new HashMap<>();
     static int tossedTuples = 0;
     static int total_processed = 0;
     static final Object lock = new Object();
@@ -329,9 +329,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			fields.append(attribute.get("name"));
 		}
 		String fields_str = fields.toString();
-		if (!useRowtime) {
-			fields_str += ", eventTime.proctime";
-		}
 
 		ds = ds.process(new ProcessFunction<Row, Row>() {
             @Override
@@ -339,14 +336,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
                     Row row,
                     ProcessFunction<Row, Row>.Context ctx,
                     Collector<Row> out) throws Exception {
-
-                String uuid = (String) row.getField(0);
-                synchronized (uuidToCnt) {
-                    if (uuidToCnt.getOrDefault(uuid, 0) > 0) {
-                        return;
-                    }
-                    uuidToCnt.put(uuid, uuidToCnt.getOrDefault(uuid, 0) + 1);
-                }
 
                 timeLastRecvdTuple = System.currentTimeMillis();
 
@@ -380,10 +369,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 		List<Map<String, String>> tuple_format = (ArrayList<Map<String, String>>) schema.get("tuple-format");
 		for (Map<String, Object> tuple : tuples) {
 			List<Map<String, Object>> attributes = (List<Map<String, Object>>) tuple.get("attributes");
-			Map<String, Object> uuid_attribute = new HashMap<>();
-			uuid_attribute.put("name", "uuid");
-			uuid_attribute.put("value", rs32.nextString());
-			attributes.add(0, uuid_attribute);
 			for (int i = 0; i < tuple_format.size(); i++) {
 				Map<String, String> attribute_format = tuple_format.get(i);
 				Map<String, Object> attribute = attributes.get(i);
@@ -722,6 +707,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 	@Override
 	public String AddSchemas(List<Map<String, Object>> schemas) {
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.setParallelism(1);
 		env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
@@ -730,11 +716,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         rocksdb.setDbStoragePath("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/db");
         env.setStateBackend(rocksdb);
         env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints");
-		if (useRowtime) {
-			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-		} else {
-			env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
-		}
 		tableEnv = StreamTableEnvironment.create(env, fsSettings);
         tableEnv.createTemporarySystemFunction("DOLTOEUR", new DolToEur());
         tableEnv.createTemporarySystemFunction("UUID", new Uuid());
@@ -746,21 +727,11 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			streamNameToId.put(stream_name, stream_id);
 			allSchemas.put(stream_id, schema);
 			ArrayList<Map<String, String>> tuple_format = (ArrayList<Map<String, String>>) schema.get("tuple-format");
-            Map<String, String> uuid_field = new HashMap<>();
-            uuid_field.put("name", "uuid");
-            uuid_field.put("type", "string");
-            tuple_format.add(0, uuid_field);
 			TypeInformation<?>[] typeInformations = new TypeInformation[tuple_format.size()];
 			int pos = -1;
 			String rowtime_column = null;
-			if (useRowtime && schema.containsKey("rowtime-column")) {
-				rowtime_column = ((Map<String, String>)schema.get("rowtime-column")).get("column");
-			}
 			for (Map<String, String> attribute : tuple_format) {
 				pos += 1;
-				if (useRowtime && attribute.get("name") != null && attribute.get("name").equals(rowtime_column)) {
-					attribute.put("name", "eventTime.rowtime");
-				}
 				switch (attribute.get("type")) {
 					case "string":
 						typeInformations[pos] = Types.STRING;
@@ -797,6 +768,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 
 	static long produced = 0;
 	RandomString rs4 = new RandomString(4);
+	volatile static int[] cnt2 = {0};
+	volatile static int[] cnt3 = {0};
     public static Map<Integer, Integer> idToCnt = new HashMap<>();
 	public void DeployQueries() {
 		for (Map<String, Object> query : fetchQueries) {
@@ -807,7 +780,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			if (sql_query == null) {
 				continue;
 			}
-            sql_query = sql_query.replace("select ", "select uuid(), ");
 			Table result = tableEnv.sqlQuery(sql_query);
 			if (!(boolean) output_schema.getOrDefault("registered", false) &&
 					(boolean) output_schema.getOrDefault("intermediary-stream", false)) {
@@ -817,8 +789,23 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 				// Need to filter out the processing time element
 				DataStream<Row> ds =
 						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
-								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1)
-								.uid("query-" + query.get("id") + rs4.nextString());
+                                .process(new ProcessFunction<Tuple2<Boolean, Row>, Row>() {
+                                    @Override
+                                    public void processElement(
+                                            Tuple2<Boolean, Row> value,
+                                            ProcessFunction<Tuple2<Boolean, Row>, Row>.Context ctx,
+                                            Collector<Row> out) throws Exception {
+                                        if (value.f0) {
+                                            out.collect(value.f1);
+                                        } else {
+					    System.out.println("Rejecting retracted tuple " + (++cnt3[0]));
+					}
+                                    }
+                                });
+//				DataStream<Row> ds =
+//						tableEnv.toRetractStream(result, streamIdToTypeInfo.get(outputStreamId))
+//								.map((MapFunction<Tuple2<Boolean, Row>, Row>) value -> value.f1)
+//								.uid("query-" + query.get("id") + rs4.nextString());
 				class CustomFlatMapFunction implements FlatMapFunction<Row, Object> {
 					public final int outputStreamId;
 					CustomFlatMapFunction(int outputStreamId) {
@@ -834,7 +821,7 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 							TypeInformationSerializationSchema<Row> serializationSchema = streamIdToSerializationSchema.get(outputStreamId);
 							for (int otherNodeId : streamIdToNodeIds.get(outputStreamId)) {
 								String topic = outputStreamName + "-" + otherNodeId;
-								//System.out.println("Row: " + row);
+								//System.out.println("Sending row " + (++cnt2[0]) + " to node " + otherNodeId + ", row: " + row);
 								nodeIdToKafkaProducer.get(otherNodeId).send(new ProducerRecord<>(topic, serializationSchema.serialize(row)));
 							}
 						} else if(streamIdBuffer.getOrDefault(outputStreamId, false)) {
@@ -881,7 +868,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			receivedTuples = 0;
 			produced = 0;
 			cnt[0] = 0;
-            uuidToCnt = new HashMap<>();
             idToCnt = new HashMap<>();
 			System.out.println(System.currentTimeMillis() + " Starting runtime");
 			try {
@@ -915,20 +901,8 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         System.out.println("Time between starting the runtime environment and the last StreamTask being initialized: " + (
                 StreamTask.lastStreamTaskInitialized - timeRuntimeStarted) + " ms");
         System.out.println("Time that the system was restored: " + StreamTask.lastStreamTaskInitialized);
-        synchronized (lock) {
-            if (!uuidToCnt2.isEmpty()) {
-                System.out.println("Number IDs received: " + uuidToCnt2.keySet().size());
-                int numberIdsDuplicates = 0;
-                for (String id : uuidToCnt2.keySet()) {
-                    if (uuidToCnt2.get(id) > 1) {
-                        ++numberIdsDuplicates;
-                        System.out.println("Id " + id + " shows up more than once! " + uuidToCnt2.get(id) + " times!");
-                    }
-                }
-                System.out.println("Number IDs showing up more than once: " + numberIdsDuplicates);
-            }
-        }
 		env = StreamExecutionEnvironment.getExecutionEnvironment();
+		env.setParallelism(1);
         env.enableCheckpointing(1000, CheckpointingMode.EXACTLY_ONCE);
 		env.getCheckpointConfig().enableExternalizedCheckpoints(CheckpointConfig.ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
 		env.getCheckpointConfig().setMinPauseBetweenCheckpoints(1000);
@@ -937,11 +911,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         rocksdb.setDbStoragePath("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/db");
         env.setStateBackend(rocksdb);
         env.getCheckpointConfig().setCheckpointStorage("file://" + System.getenv("TMP_FOLDER") + "/state/runtime-state/node-" + nodeId + "/checkpoints");
-		if (useRowtime) {
-			env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
-		} else {
-			env.setStreamTimeCharacteristic(TimeCharacteristic.IngestionTime);
-		}
 		tableEnv = StreamTableEnvironment.create(env, fsSettings);
 		tableEnv.createTemporarySystemFunction("DOLTOEUR", new DolToEur());
 		tableEnv.createTemporarySystemFunction("UUID", new Uuid());
@@ -978,8 +947,6 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
 			Tuple2<Integer, Row> tuple = tuples_to_send.get(i);
 			int stream_id = tuple.f0;
 			Row row = tuple.f1;
-			// Unique uuid field
-			row.setField(0, rs32.nextString());
             List<Integer> to_nodes;
             synchronized(streamIdToNodeIds) {
                 to_nodes = new ArrayList<>(streamIdToNodeIds.get(stream_id));
@@ -1350,6 +1317,22 @@ public class FlinkExperimentFramework implements ExperimentAPI, SpeSpecificAPI, 
         long timeSentStaticFiles = System.currentTimeMillis();
         System.out.println("Time to extract static state: " + (timeExtractedStaticState - ms_start));
         System.out.println("Time to load and send static state: " + (timeSentStaticFiles - timeExtractedStaticState));
+        EmbeddedRocksDBStateBackend rocksDBStateBackend = (EmbeddedRocksDBStateBackend) env.getStateBackend();
+        rocksDBStateBackend.setRocksDBOptions(new RocksDBOptionsFactory() {
+            @Override
+            public DBOptions createDBOptions(
+                    DBOptions currentOptions,
+                    Collection<AutoCloseable> handlesToClose) {
+                return currentOptions.setIncreaseParallelism(0);
+            }
+
+            @Override
+            public ColumnFamilyOptions createColumnOptions(
+                    ColumnFamilyOptions currentOptions,
+                    Collection<AutoCloseable> handlesToClose) {
+                return currentOptions;
+            }
+        });
 		return "Success";
 	}
 
